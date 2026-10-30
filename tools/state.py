@@ -238,7 +238,7 @@ def parse(src):
                 if abs(a[1] - sx) < 60 and 2200 < a[2] < 2560 and re.fullmatch(r"[\d./]+", a[0]):
                     if 60 < a[2] - sy < 140 and re.fullmatch(r"\d+(\.\d+)?", a[0]): amt = a[0]
                     used.add(id(a))
-            st["presets"].append({"frac": nm, "amt": amt, "xy": [sx, sy]})
+            st["presets"].append({"frac": nm, "amt": amt, "xy": [sx, sy], "off": preset_off(im, sx, sy)})
     st["texts"] = [a for a in tx if id(a) not in used]
     st["dealer"] = find_dealer(im, toks)
     b = st["buttons"]
@@ -264,6 +264,25 @@ def parse(src):
         st["screen"] = "other"
     st["ms"] = int((time.time() - t0) * 1000); st["ms_cards"] = int(t_cards * 1000)
     return st
+
+
+def preset_off(im, sx, sy):
+    """额度预设是否不可用（灰色）：金额低于最小下注/最小加注、或超过筹码时按钮变灰，点了不会下注（2026-10-30 实测：
+    底池 4 时 1/3=1 是灰的，点后等于让牌）。判据：档位下方金额文字的最亮像素 —— 可用档纯白(≥240)，灰档≈120~135，
+    滑条展开整屏变暗时 <20（同样不可用）。用 min(R,G,B) 排除绿色桌面。"""
+    m = 0
+    for y in range(sy + 70, min(im.h, sy + 135), 2):
+        for x in range(max(0, sx - 45), min(im.w, sx + 46), 2):
+            v = min(im.px(x, y))
+            if v > m:
+                m = v
+                if m >= 200: return False
+    return True
+
+
+def usable_presets(st):
+    """可点的额度预设（排除灰档）"""
+    return [p for p in st.get("presets") or [] if not p.get("off")]
 
 
 def _num(t):
@@ -464,6 +483,23 @@ class HandHist:
     def reset(self, hero):
         self.hero, self.pos, self.street, self.ev, self.level = hero, None, None, [], 1
         self.my_tot = self.opp_tot = 0; self.last_me = None; self._snap = None
+        self.pot0 = None                     # 当前街开始时的底池（换街时用底池增量校正我方下注额）
+
+    _ORDER = ("翻前", "翻牌", "转牌", "河牌")
+
+    def _fix_unknown_bet(self, new_street, pot_prev):
+        """上一街我方下注额记成 '?'（预设金额没读到）且对手跟注结束了这一街：用底池增量反推。
+        底池没涨 -> 那次点击没有下注（例如点了灰档），改记为让牌。只在相邻两街之间校正。"""
+        if self.pot0 is None or pot_prev is None or self.last_me not in ("加注", "下注"): return
+        o = self._ORDER
+        if self.street not in o or new_street not in o or o.index(new_street) - o.index(self.street) != 1: return
+        i = next((i for i in range(len(self.ev) - 1, -1, -1) if self.ev[i][1].startswith("我方")), None)
+        if i is None or self.ev[i][0] != self.street or "到 ?" not in self.ev[i][1]: return
+        delta = pot_prev - self.pot0
+        if delta <= 0:
+            self.ev[i] = (self.street, "我方让牌"); self.last_me = "让牌"
+        elif delta % 2 == 0:
+            self.ev[i] = (self.street, self.ev[i][1].replace("到 ?", f"到 {delta // 2}", 1)); self.my_tot = delta // 2
 
     def observe(self, st):
         hero = tuple(st["hero"])
@@ -479,9 +515,11 @@ class HandHist:
             self.pos = "BTN" if my == 1 and opp == 2 else "BB" if my == 2 else None
         if street != self.street:
             if self.street is not None:   # 上一街如何结束
+                self._fix_unknown_bet(street, n.get("pot_prev"))
                 if self.last_me in ("加注", "下注", "全下"): self.ev.append((self.street, "对手跟注"))
                 elif self.last_me == "让牌" and self.pos == "BB": self.ev.append((self.street, "对手让牌"))
             self.street, self.level, self.last_me = street, (1 if street == "翻前" else 0), None
+            self.pot0 = 0 if street == "翻前" else n.get("pot_prev")
             if street == "翻前":
                 if self.pos == "BB" and opp > 2: self.ev.append((street, f"对手开局加注到 {opp}")); self.level = 2
                 elif self.pos == "BB" and opp == 2: self.ev.append((street, "对手平跟(limp)"))
@@ -626,7 +664,7 @@ def brief_text(st, hist=None, hist_line=True):
         elif k in ("All in", "ALL IN", "全下"): opts.append(f"全下{(ms or 0) + (n.get('my_bet') or 0)}")
         elif k in ("弃牌", "让牌"): opts.append(k)
         elif k in ("下注", "加注"):
-            ps = "、".join(f"{p['frac']}={p['amt']}" for p in st["presets"])
+            ps = "、".join(f"{p['frac']}={p['amt']}" for p in usable_presets(st))
             opts.append(f"{k}[{('加注到 ' if tc else '') + ps}]" if ps else k)
     L.append("可选 " + " / ".join(opts))
     return "\n".join(L)
@@ -639,8 +677,9 @@ def to_text(st, hist=None, raw_texts=True):
     if st["screen"] == "my_turn": L += facts(st)
     if hist is not None and st["screen"] == "my_turn": L += hist.text()
     elif st["buttons"]: L.append("可点按钮: " + "，".join(f"{k}" for k in st["buttons"]))
-    if st["presets"]: L.append("加注/下注额度预设(点一下即按该额度下注): " + "，".join(
-        (f"{p['frac']}={p['amt']}" if p['frac'].endswith("BB") else f"{p['frac']}池={p['amt']}") for p in st["presets"]))
+    if st["presets"]: L.append("加注/下注额度预设(点一下即按该额度下注；灰档不可用): " + "，".join(
+        (f"{p['frac']}={p['amt']}" if p['frac'].endswith("BB") else f"{p['frac']}池={p['amt']}") + ("(灰,不可用)" if p.get("off") else "")
+        for p in st["presets"]))
     tx = st["texts"]
     if not raw_texts and st["screen"] == "my_turn":
         # 精简：数字/位置/按钮已由代码算好，只留桌面区域里的少量非数字文字（如对手头像上的 Allin、昵称、提示）

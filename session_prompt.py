@@ -282,7 +282,7 @@ def snapshot_bb(st, hist):
         elif k in ("弃牌", "让牌"): opts.append(k)
         elif k in ("下注", "加注"):
             ps = []
-            for p in st["presets"]:
+            for p in wpstate.usable_presets(st):
                 a = float(p["amt"]) if p.get("amt") else None
                 if p["frac"].endswith("BB"): ps.append(p["frac"] if a is None or abs(a / 2 - float(p["frac"][:-2])) < .01 else f"{p['frac']}={bb(a)}BB")
                 else: ps.append(f"{p['frac']}池" + (f"={bb(a)}BB" if a is not None else ""))

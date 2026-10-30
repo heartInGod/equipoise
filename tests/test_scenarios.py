@@ -85,6 +85,17 @@ class TestGoldenFrames(unittest.TestCase):
         for _ in range(5): S.parse(str(f))
         self.assertLess((time.time() - t) / 5, 0.6, "parse 应 <0.6s（常驻 OCR）")
 
+    def test_grey_preset_detected(self):
+        """真实帧：底池 4 时 1/3=1 是灰档；002620 整体偏暗但 5 档都可用；001202 只有 1/3 可用"""
+        cases = {"000019_005_my_turn": [True, False, False, False, False], "002620_my_turn": [False] * 5,
+                 "001202_my_turn": [False, True, True, True, True], "004114_my_turn": [True, False, False, False, False]}
+        n = 0
+        for f, exp in cases.items():
+            p = ROOT / f"model_test/live/{f}.raw"
+            if not p.exists(): continue
+            self.assertEqual([q["off"] for q in S.parse(str(p))["presets"]], exp, f); n += 1
+        if not n: self.skipTest("no frame")
+
 
 # ---------------------------------------------------------------- 2. 各界面流程
 class TestScreens(unittest.TestCase):
@@ -228,6 +239,26 @@ class TestExecute(unittest.TestCase):
     def test_illegal_size_uses_middle_preset(self):
         out, t = self.ex(mk(presets=POT_PRE), {"act": "加注", "size": "大一点"}); self.assertEqual(t, [(720, 2291)])
 
+    def test_grey_preset_never_tapped(self):
+        """1/3 档低于最小下注是灰的（点了不下注）：改点最近的可用档 1/2"""
+        ps = [dict(p) for p in POT_PRE]; ps[0].update(amt=None, off=True)
+        out, t = self.ex(mk(presets=ps), {"act": "下注", "size": "1/3"}); self.assertEqual(t, [(511, 2305)])
+
+    def test_grey_large_presets_pick_largest_usable(self):
+        """大档超过筹码变灰：要 1.2 池时点最大的可用档"""
+        ps = [dict(p) for p in POT_PRE]; ps[3]["off"] = ps[4]["off"] = True
+        out, t = self.ex(mk(presets=ps), {"act": "下注", "size": "1.2"}); self.assertEqual(t, [(720, 2291)])
+
+    def test_all_presets_over_stack_goes_allin(self):
+        ps = [dict(p, off=True) for p in POT_PRE]
+        out, t = self.ex(mk(presets=ps, nums={"my_stack": 3, "my_bet": 0}), {"act": "下注", "size": "1/2"})
+        self.assertEqual(t, [("allin", 720, 2620)])
+
+    def test_grey_presets_hidden_from_prompt(self):
+        ps = [dict(p) for p in POT_PRE]; ps[0].update(amt=None, off=True)
+        txt = S.brief_text(mk(board=("4d", "Ad", "Kd"), presets=ps, buttons={"弃牌": FOLD, "让牌": CHECK, "下注": RAISE}))
+        self.assertIn("下注[1/2=6", txt); self.assertNotIn("1/3", txt)
+
     def test_raise_without_presets_is_atomic_min_raise(self):
         out, t = self.ex(mk(), {"act": "加注", "size": "3BB"}); self.assertEqual(t, [("raise_min", 720, 2620)])
 
@@ -360,6 +391,28 @@ class TestHandHist(unittest.TestCase):
         txt = "\n".join(h.text())
         self.assertIn("我方下注到 4", txt); self.assertIn("对手加注到 20", txt)
 
+    def _flop_bet_unknown(self, turn_prev):
+        """BB 翻前让牌到翻牌（底池 4），翻牌点了金额读不到的预设（记成 '到 ?'），转牌开始时底池 = turn_prev"""
+        d = (720, 900); fl = ("4d", "Ad", "Kd")
+        h = S.HandHist()
+        st = mk(board=(), dealer=d, nums={"opp_bet": 2, "my_bet": 2, "pot": 4, "pot_prev": 0}); h.observe(st)
+        h.mine({"act": "让牌"}, "让牌@[1,2]", st)
+        st = mk(board=fl, dealer=d, nums={"opp_bet": 0, "my_bet": 0, "pot": 4, "pot_prev": 4}); h.observe(st)
+        h.mine({"act": "下注"}, "preset 1/3=None@[304,2407](要1/3)", st)
+        self.assertIn("我方下注到 ?", "\n".join(h.text()))
+        h.observe(mk(board=fl + ("Kc",), dealer=d, nums={"opp_bet": 0, "my_bet": 0, "pot": turn_prev, "pot_prev": turn_prev}))
+        return "\n".join(h.text())
+
+    def test_unknown_bet_fixed_by_pot_growth(self):
+        """对手跟注后换街：底池 4 -> 8，反推我方下注到 2"""
+        txt = self._flop_bet_unknown(8)
+        self.assertIn("我方下注到 2", txt); self.assertIn("对手跟注", txt); self.assertNotIn("?", txt)
+
+    def test_unknown_bet_without_pot_growth_is_check(self):
+        """点了灰档（没下注）：换街后底池没涨 -> 改记为 我方让牌 → 对手让牌（2026-10-30 回放 000019 实例）"""
+        txt = self._flop_bet_unknown(4)
+        self.assertIn("翻牌: 我方让牌 → 对手让牌", txt); self.assertNotIn("对手跟注", txt.split("翻牌:")[1])
+
 
 class TestMadeDesc(unittest.TestCase):
     CASES = [
@@ -410,6 +463,29 @@ class TestRules(unittest.TestCase):
     def test_board_pair_is_not_strong(self):
         d = self.act(hero=("Ah", "Kd"), board=("7c", "7s", "2d"), buttons={"弃牌": FOLD, "跟注": CALL}, nums={"to_call": 20, "pot": 30})
         self.assertEqual(d["act"], "弃牌")
+
+    def _bet_or_check(self, hero, board):
+        return self.act(hero=hero, board=board, presets=POT_PRE, buttons={"弃牌": FOLD, "让牌": CHECK, "下注": RAISE})["act"]
+
+    def test_two_pair_on_four_straight_board_not_value_bet(self):
+        """2026-10-30 回放 005050：QJ 在 Ac Js 8c Qd Kc（一张 T 成顺、三张梅花）上不能当强牌打价值"""
+        self.assertEqual(self._bet_or_check(("Jd", "Qh"), ("Ac", "Js", "8c", "Qd", "Kc")), "让牌")
+
+    def test_top_pair_on_monotone_board_checks(self):
+        self.assertEqual(self._bet_or_check(("Ah", "Kd"), ("Ac", "7c", "2c")), "让牌")
+        self.assertEqual(self._bet_or_check(("Ah", "Kd"), ("Ac", "7s", "7d")), "下注")    # 两对(A和7)，A 是我方的大对：照常打价值
+
+    def test_two_pair_with_bigger_board_pair_is_one_pair(self):
+        self.assertEqual(self._bet_or_check(("5h", "6d"), ("Kc", "Ks", "5d")), "让牌")
+
+    def test_nut_hands_still_value_bet(self):
+        self.assertEqual(self._bet_or_check(("Kh", "6d"), ("Kc", "6s", "6c")), "下注")    # 葫芦
+        self.assertEqual(self._bet_or_check(("Ah", "5h"), ("Kh", "7h", "2h")), "下注")    # 坚果同花
+        self.assertEqual(self._bet_or_check(("Ah", "Kd"), ("Ac", "7s", "2d")), "下注")    # 干燥面顶对
+
+    def test_danger_two_pair_still_calls_small_bet(self):
+        d = self.act(hero=("Jd", "Qh"), board=("Ac", "Js", "8c", "Qd", "Kc"), buttons={"弃牌": FOLD, "跟注": CALL}, nums={"to_call": 5, "pot": 30})
+        self.assertEqual(d["act"], "跟注")
 
 
 # ---------------------------------------------------------------- 7. 基础设施

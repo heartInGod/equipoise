@@ -325,11 +325,38 @@ def _pre_class(hero):
 
 
 def _pick_preset(st, want):
-    ps = st.get("presets") or []
+    ps = wpstate.usable_presets(st)
     for w in want:
         p = next((p for p in ps if p["frac"] == w), None)
         if p: return p["frac"]
     return ps[min(2, len(ps) - 1)]["frac"] if ps else None
+
+
+def board_danger(board):
+    """公共牌危险度：fl4=四张同花(一张牌成同花)、st4=一张牌就能成顺、fl3=三张同花、paired=公共牌有对子"""
+    suits = [c[-1] for c in board]
+    bv = [wpstate._rv(c) for c in board]
+    mx = max((suits.count(s) for s in set(suits)), default=0)
+    st4 = len(board) >= 4 and any(wpstate._straight_hi(bv + [r]) for r in range(2, 15))
+    return {"fl4": mx >= 4, "st4": st4, "fl3": mx >= 3, "paired": len(set(bv)) < len(bv)}
+
+
+def _downgrade(hero, board, md):
+    """兜底规则里“强牌”在危险牌面降为中等牌（只过牌/便宜跟注，不主动打价值）：
+    - 顺子/同花/葫芦/四条 不降；
+    - 公共牌四张同花或一张成顺 -> 两对、三条、顶对、超对都降；
+    - 公共牌三张同花 -> 一对类（顶对/超对）降（公共牌有对子时 made_desc 给的是“两对”，走下一条）；
+    - 两对里有一对是公共牌对子且比我方配上的那对大 -> 实际只是一对，降。"""
+    if re.search(r"顺子|同花\(我方|葫芦|四条", md): return False
+    d = board_danger(board)
+    if d["fl4"] or d["st4"]: return True
+    if re.search(r"顶对|超对", md) and d["fl3"]: return True
+    if "两对" in md and "其中用到我方的" in md:
+        hv, bv = {wpstate._rv(c) for c in hero}, [wpstate._rv(c) for c in board]
+        bp = max((v for v in set(bv) if bv.count(v) >= 2), default=0)
+        mine = max((v for v in hv if v in bv), default=0)
+        return mine < bp
+    return False
 
 
 def rule_decide(st, hist=None):
@@ -348,12 +375,12 @@ def rule_decide(st, hist=None):
         c = _pre_class(st["hero"])
         lvl = hist.level if hist is not None and hist.street == "翻前" else (2 if tc > 2 else 1)
         pr = wpstate.preflop_rank(st["hero"])
-        if pr and lvl <= 1 and tc == 1 and can_bet and st.get("presets") and pr[1]["top"] <= 85:   # 按钮位首次行动：开局
+        if pr and lvl <= 1 and tc == 1 and can_bet and wpstate.usable_presets(st) and pr[1]["top"] <= 85:   # 按钮位首次行动：开局
             return bet(_pick_preset(st, ["2BB", "3BB"]), f"按钮开局 前{pr[1]['top']:.0f}%")
         if pr and tc > 10 and wpstate.vs_big_eq(pr[1]["eq"]) >= need:   # 面对全下/大额加注：按对其范围的估计胜率对比赔率
             return call(f"估计胜率{wpstate.vs_big_eq(pr[1]['eq']):.0f}%>=需{need:.0f}%")
         if c == "premium":
-            if can_bet and lvl <= 2 and st.get("presets"): return bet(_pick_preset(st, ["3BB", "1/2", "2/3"]), "强牌加注")
+            if can_bet and lvl <= 2 and wpstate.usable_presets(st): return bet(_pick_preset(st, ["3BB", "1/2", "2/3"]), "强牌加注")
             return call("强牌跟注") if tc else chk_fold("强牌")
         if c == "playable":
             if tc == 0: return chk_fold("可玩牌")
@@ -362,6 +389,8 @@ def rule_decide(st, hist=None):
     md = " ".join(wpstate.made_desc(st["hero"], st["board"]))
     strong = bool(re.search(r"两对|三条|顺子|同花\(|葫芦|四条|顶对|超对", md)) and not re.search(r"我方仅高牌|没用到手牌|公共牌三条", md)
     medium = bool(re.search(r"一对|口袋对", md)) and not strong
+    if strong and _downgrade(st["hero"], st["board"], md):
+        strong, medium = False, True
     outs = sum(int(x) for x in re.findall(r"(\d+) outs", md.split("听牌:")[-1])) if "听牌:" in md else 0
     if strong:
         if tc == 0 and can_bet: return bet(_pick_preset(st, ["2/3", "1/2"]), "强牌价值下注")
@@ -390,21 +419,39 @@ def allin_seq(st, io):
     return f"{k}->滑条到顶->确定@{(x, y - 7)}"
 
 
+def _all_over_stack(st):
+    """全部预设都是灰的，且读得到的金额都 ≥ 我方剩余筹码+本街已下（不是滑条展开导致的整屏变暗）"""
+    n = st.get("nums") or {}
+    cap = (n.get("my_stack") or 0) + (n.get("my_bet") or 0)
+    amts = [float(p["amt"]) for p in st["presets"] if p.get("amt") and re.fullmatch(r"\d+(\.\d+)?", p["amt"])]
+    return cap > 0 and bool(amts) and not wpstate.usable_presets(st) and min(amts) >= cap
+
+
 def execute(st, dec, io):
     act, size = dec.get("act"), dec.get("size")
     b = st["buttons"]
     if act in ("下注", "加注") and "确定" in b:
         io.tap(*b["确定"]); return f"滑条确定(最小加注)@{b['确定']}"     # 加注滑条已展开（默认=最小加注额）
-    if act in ("下注", "加注") and st["presets"]:
+    ps = wpstate.usable_presets(st)
+    if act in ("下注", "加注") and ps:
         w = str(size or "").replace(" ", "").replace("池", "")
-        p = next((p for p in st["presets"] if p["frac"] == w), None)
+        p = next((p for p in ps if p["frac"] == w), None)
         if not p:
-            # 档位不在当前预设里：按金额取最接近的预设，绝不单点加注按钮(会弹滑条)
+            # 档位不在当前可用预设里：按金额取最接近的预设，绝不单点加注按钮(会弹滑条)
             m = re.fullmatch(r"(\d+(?:\.\d+)?)BB", w)
             want = float(m.group(1)) * 2 if m else (float(w) if re.fullmatch(r"\d+(\.\d+)?", w) else None)
-            cand = [q for q in st["presets"] if q["amt"] and re.fullmatch(r"\d+(\.\d+)?", q["amt"])]
-            p = min(cand, key=lambda q: abs(float(q["amt"]) - want)) if want is not None and cand else st["presets"][min(2, len(st["presets"]) - 1)]
+            cand = [q for q in ps if q["amt"] and re.fullmatch(r"\d+(\.\d+)?", q["amt"])]
+            grey = next((i for i, q in enumerate(st["presets"]) if q["frac"] == w), None)
+            if grey is not None:       # 要的档是灰的（低于最小下注/加注或超过筹码）：按档位顺序取最近的可用档（"1"/"1.2" 是档位名，不是筹码数）
+                p = min(ps, key=lambda q: abs(st["presets"].index(q) - grey))
+            elif want is not None and cand:
+                p = min(cand, key=lambda q: abs(float(q["amt"]) - want))
+            else:
+                p = ps[min(2, len(ps) - 1)]
         io.tap(*p["xy"]); return f"preset {p['frac']}={p['amt']}@{p['xy']}(要{size})"
+    if act in ("下注", "加注") and st["presets"] and _all_over_stack(st):
+        d = allin_seq(st, io)          # 所有档位都超过筹码（灰）：想下注就是全下
+        if d: return d + "(预设都超过筹码)"
     if act in ("下注", "加注"):
         k = act if act in b else next((k for k in ("加注", "下注") if k in b), None)
         if k: io.raise_min(*b[k]); return f"{k}->确定(最小加注，无预设)@{b[k]}"

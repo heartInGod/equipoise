@@ -108,7 +108,7 @@ def main():
         if k: target = (k, b[k])
     elif cmd == "raise":
         want = a[1].replace(" ", "") if len(a) > 1 else ""
-        p = next((p for p in st["presets"] if p["frac"].replace(" ", "") == want or (p["amt"] or "") == want), None)
+        p = next((p for p in st["presets"] if not p.get("off") and (p["frac"].replace(" ", "") == want or (p["amt"] or "") == want)), None)
         if p: target = (f"预设{p['frac']}({p['amt']})", p["xy"])
         elif want in ("", "btn"):
             k = next((k for k in ("加注", "下注") if k in b), None)

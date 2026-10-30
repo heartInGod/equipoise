@@ -222,6 +222,15 @@ class TestMyTurnFlow(unittest.TestCase):
         r = b.handle("x", mk(presets=BB_PRE, buttons={"弃牌": FOLD, "让牌": CHECK, "确定": [720, 2613]}), 101.5)
         self.assertTrue(r["act"].startswith("确认确定")); self.assertEqual(io.taps[-1], (720, 2613))
 
+    def test_preset_no_confirm_within_1s(self):
+        """2026-10-30 22:58 真机：预设已直接下注，0.3s 后的帧界面未刷新仍是我的回合，补点 下注@(720,2619) 点到我方头像弹出资料卡"""
+        b, io = bot(C.Decider(fixed(OK_RAISE)))
+        b.handle("x", mk(presets=BB_PRE), 100)
+        r = b.handle("x", mk(presets=BB_PRE), 100.3)
+        self.assertEqual(r["act"], "wait"); self.assertEqual(io.taps, [(511, 2305)])
+        b.handle("x", mk(buttons={}, screen="other"), 101.5)
+        self.assertEqual(io.taps, [(511, 2305)])
+
     def test_slider_dim_after_raise_taps_confirm(self):
         """加注滑条展开 -> 整屏变暗读不到牌：按原决策点确定，不重新问模型"""
         m = fixed('{"act":"加注","size":"9BB","why":"x"}')

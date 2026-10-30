@@ -603,8 +603,11 @@ class Bot:
             if k: tap(*b[k]); rec["act"] = f"unknown->点{k}"
         elif scr == "can_start":
             tap(*b["开始游戏"]); rec["act"] = "开始游戏"
+        elif scr == "my_turn" and self.pending and t_shot - self.pending[0] < 1.0 and self.pending[1] == (hero, board):
+            # 点预设后 1s 内的帧：服务器还没处理完（预设通常直接下注），此时补点会点在我方头像上弹出资料卡
+            rec["act"] = "wait"; rec["note"] = "预设刚点，等界面刷新"
         elif scr == "my_turn" and self.pending and now() - self.pending[0] < 4 and self.pending[1] == (hero, board):
-            # 上一步点了额度预设，界面仍在我的回合 -> 预设只填额度，补点确认
+            # 上一步点了额度预设，1s 后界面仍在我的回合 -> 预设只填额度，补点确认
             k = next((k for k in ("确定", "确认", "加注", "下注") if k in b), None)
             rec["act"] = f"确认{k}@{b[k]}" if k else "noop"
             if k: tap(*b[k])

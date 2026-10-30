@@ -29,6 +29,8 @@ description: 德州扑克（无限注 NLH）职业牌手助手 + WePoker 真机�
 | `tools/preflop_rank.json` | 169 种起手牌单挑胜率与排名百分位（`tools/make_preflop_rank.py` 生成）+ `vs` 对前 5/10/20/35/50% 范围的胜率（`make_preflop_rank.py --vs` 生成，8 进程约 5 分钟），`state.preflop_rank()` 读，状态里显示「起手牌 前X%」；翻前面对大注（>5BB）时 `state.big_range()` 按加注层级/大小估对手范围（4bet+ 前5%、3bet 前10%、开局大注按 BB 前50%~10%），`vs_big_eq()` 查表给「翻前面对大注 对其范围(约前X%)胜率」，规则与 short/session 三处共用 | 翻前范围 |
 | `tools/state.py` | 截图 → 文字状态（常驻 OCR 进程 `_OCRServer` + 模板识牌，parse≈0.2s），含 `facts`/`made_desc`（听牌含去重“合计 N outs”）/`draw_outs`/`draw_eq`/`draw_line`（精确听牌胜率）/`preset_off`/`usable_presets`（灰档识别）/`HandHist`（换街用底池增量校正“下注到 ?”） | 机器人识别问题 |
 | `tools/ocr.swift` → `tools/ocr` | macOS Vision OCR；`serve` 常驻模式；改完 `cd tools && swiftc -O ocr.swift -o ocr` | 识别底层 |
+| `tools/vstream.swift` → `tools/vstream` | 视频流截图：拉起 `adb exec-out screenrecord --output-format=h264 -`，VideoToolbox 硬解只留最新帧；stdin 命令 `wait <seq> <ms>` / `snap <path>`（写与 screencap 同格式 .raw）；screenrecord 180s 到时限自动重启；改完 `cd tools && swiftc -O vstream.swift -o vstream`（编译产物不入库） | 截图底层 |
+| `tools/stream.py` | `StreamGrabber`：与 `Grabber` 同接口 `get(min_t)`；帧时间 = now − LAT(0.25s，实测画面变化→解码≤0.22s)；静止时每 0.5s 重复返回同一帧；流不可用时退回单次 screencap。`bot_core.make_grabber(io, capture)` 选择 | tlive 截图方式 |
 | `tools/bench_llm.py` | 模型延迟基准（新建连接 vs 长连接） | 查模型慢 |
 | `tools/act.py` | 按 OCR 到的按钮文字定位并点击（弃/让/跟/加注/全下） | 手动操作手机 |
 | `tools/watch.py` | 后台监视，画面变化时存 raw 截图 | 采集样本 |
@@ -115,7 +117,7 @@ GTO 基线：<无对手信息时怎么打，一句话>
 python3 poker_bot.py list                                   # 列出可用模型
 python3 tools/state.py                                      # 现场截图并打印识别结果（不调模型）
 python3 poker_bot.py tprobe --model <provider/model> --img model_test/state1.raw   # 单帧测试文本模式
-python3 poker_bot.py tlive --model <provider/model> --max-sec 600 [--dry] [--budget 8 --hedge 3.0] [--no-preflop-rule] [--prompt session|short]   # 主模式（默认 --prompt session + 默认桌；翻前默认不问模型、直接本地规则；--no-preflop-rule 让翻前也问模型）
+python3 poker_bot.py tlive --model <provider/model> --max-sec 600 [--dry] [--budget 8 --hedge 3.0] [--no-preflop-rule] [--prompt session|short] [--capture stream|screencap]   # 主模式（默认 --capture stream：视频流截图，帧间隔约 0.2s；vstream 未编译自动退回 screencap ~0.95s/帧；默认 --prompt session + 默认桌；翻前默认不问模型、直接本地规则；--no-preflop-rule 让翻前也问模型）
 python3 poker_bot.py tlive --model <m> --replay model_test/live --t0 001000 --t1 002000 [--rule]   # 离线回放，不连手机（--rule 不调模型）
 tail -f logs/$(date +%F)/ops.log                           # 实时看机器人操作 + 异常（跨零点后换新文件，需重开）
 tail -f logs/$(date +%F)/ops.log | grep -v --line-buffered " INFO  \["   # 只看 WARN/ERROR（traceback 行无级别，会保留）
@@ -127,7 +129,8 @@ python3 tools/players.py list | show <opp> | hands <opp> [--table X] | hand <hid
 
 - **优先用文本模式 `tlive`**（本地识别 + 模型只做决策）。`probe/live` 是早期直接把图片丢给模型的模式，慢且不稳定。
 - 决策 prompt 默认 `--prompt session`（评测 99% vs short 95%）；`--prompt short` 是备用单帧 prompt：`bot_core.py` 的 `TPROMPT`（约 600 字，状态由 `tools/state.py` 的 `brief_text()` 生成），用于单帧调试、非 Anthropic 模型兜底、session 出问题时对照（旧 long 模式已删除）；`tlive [--prompt session] --table tables/<桌> [--opp <昵称初值,可选>] [--profile-every 10] [--warm/--no-warm]` 用开局长 system + 画像（跨桌热启动，见 §4） + 每次一条本手完整记录（真机模式把每手写进本桌 `tables/<桌>/hands.jsonl`、模型对话写本桌 `msgs.jsonl`（按 hid 关联），每 N 手异步更新本桌画像 `tables/<桌>/<opp>.md`，旧画像备份为 `.md.bak`；回放模式只写 `logs/<日期>/hands__*.jsonl` + `msgs__*.jsonl`，不写库、不改画像），`to_text()` 仍用于人工查看（`tools/state.py`、`act.py look`）。改策略改 `TPROMPT`，改识别改 `state.py`，改流程改 `Bot.handle`；改完跑 `tests/test_scenarios.py`，识别有意改动用 `tests/make_golden.py --check` 看差异再刷新。
-- 延迟链路：Grabber 后台连续截图 → parse(0.2s) → 模型（长连接；3.0s 未返回发对冲请求（`--hedge`，默认 3.0）；截图后 `--budget` 8s 仍无结果用 `rule_decide`）→ 常驻 adb shell 发点击（不阻塞）。点击后开始于 busy_until+0.25s 之前的帧丢弃。
+- 手机需插 USB 常亮（`adb shell svc power stayon usb`），否则息屏后机器人对着 AOD 黑屏空转（2026-10-30 23:10 出现过）。
+- 延迟链路：截图（默认 StreamGrabber 视频流，取帧即最新画面；`--capture screencap` 用 Grabber 后台连续 screencap）→ parse(0.2s) → 模型（长连接；3.0s 未返回发对冲请求（`--hedge`，默认 3.0）；截图后 `--budget` 8s 仍无结果用 `rule_decide`）→ 常驻 adb shell 发点击（不阻塞）。点击后开始于 busy_until+0.25s 之前的帧丢弃。
 - 识别出的画面类型：`my_turn`、`anim`、`runit`（全下后选发一次/两次）、`profile`、`away`、`can_start`、`need_sit`、`waiting`、`other`。
 - 无法处理的界面会存到 `model_test/unknown/` 并写入 `logs/<YYYY-MM-DD>/unknown.jsonl`，优化识别时先看这里。
 - WePoker 界面事实（2026-10-30 真机实测，详见 `tools/act.py` 文件头）：

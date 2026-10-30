@@ -720,6 +720,17 @@ def new_table(tdir):
     return tdir
 
 
+def make_grabber(io, capture):
+    """capture=stream：视频流（tools/stream.StreamGrabber）；vstream 没编译时退回 screencap Grabber"""
+    if capture == "stream":
+        import stream
+        if stream.available():
+            return stream.StreamGrabber(io, logroll.LOGS / ".ring").start()
+        LOG.warning("[grab] tools/vstream 未编译（cd tools && swiftc -O vstream.swift -o vstream），退回 screencap")
+    g = Grabber(io, logroll.LOGS / ".ring"); g.start()
+    return g
+
+
 def run_live(a):
     """真机：Grabber 连续截图 -> parse -> Bot.handle"""
     logroll.day_dir()                                   # 建今天的目录并清理 90 天前的日志
@@ -734,7 +745,7 @@ def run_live(a):
     unk = ROOT / "model_test" / "unknown"; unk.mkdir(parents=True, exist_ok=True)
     io = AdbIO()
     LOG.info("[io] 常驻 adb shell: %s", io.persistent)
-    grab = Grabber(io, logroll.LOGS / ".ring"); grab.start()
+    grab = make_grabber(io, getattr(a, "capture", "screencap"))
     w = AsyncWriter()
     say = lambda m: (LOG.error if "失败" in m else LOG.info)("%s", m)   # session 的消息；“…失败”记 ERROR
     say(f"===== tlive 启动 model={a.model} prompt={a.prompt} table={getattr(a, 'table', None)} dry={a.dry} =====")
@@ -755,7 +766,9 @@ def run_live(a):
             (LOG.warning if str(rec["act"]).startswith(("unknown", "兜底", "noop")) else LOG.info)("%s", ops_line(rec, st), extra={"file_only": True})
     if bot.sess: bot.sess.flush()
     say("===== tlive 结束 =====")
-    grab.stop = True; w.flush(); logroll.ops_flush()
+    grab.stop = True
+    if hasattr(grab, "close"): grab.close()
+    w.flush(); logroll.ops_flush()
 
 
 def run_replay(a):

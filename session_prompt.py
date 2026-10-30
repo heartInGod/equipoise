@@ -180,7 +180,7 @@ def profile_type(t):
 
 
 def _profile_brief(table_dir, opp, cap=2500, prof=None):
-    """对手画像：prof=对手库里热加载的画像；否则读 <opp>.md；都没有时给出提示"""
+    """对手画像：prof=对手库里查到的画像；否则读 <opp>.md；都没有时给出提示"""
     if prof: return prof
     p = profile_path(table_dir, opp)
     if not p:
@@ -255,7 +255,7 @@ def _type_line(table_dir, opp):
 
 
 def opp_desc(S, table_dir=None, opp=None, typ=None):
-    """一句话描述：优先用画像的类型判断（typ=对手库里热加载的；否则读画像文件），没有就按统计启发式生成"""
+    """一句话描述：优先用画像的类型判断（typ=对手库里查到的；否则读画像文件），没有就按统计启发式生成"""
     t = typ or _type_line(table_dir, opp)
     if t: return t
     if S["vp_n"] < 4: return "样本太少，按基线打"
@@ -383,7 +383,7 @@ class HandSession:
         """history=该对手此前（跨桌）已结束的手 / hist_stats=其累计统计计数，热启动；population=其他对手的手，对手样本少时作群体参考（冷启动）。
         对手昵称由 see_opp() 从截图识别（多帧投票），识别到/换人后 warm=True 时后台加载该对手跨桌历史，下一手开始生效；
         opp 参数只是初始值（可为 None）。
-        store=对手库 OppDB（已热加载）：有它时历史统计/画像/群体参考直接从内存取；store_write=True（仅真机）时每手追加 jsonl 后同步进库。"""
+        store=对手库 OppDB：有它时历史统计/画像/群体参考按主键查库；store_write=True（仅真机）时每手追加 jsonl 后同步进库。"""
         self.table_dir, self.opp, self.keep = table_dir, opp, keep_hands
         self.hist_S = hist_stats or (opp_stats(history) if history else None)
         self.prof = None                     # 对手库里的画像 {"profile","ptype"}
@@ -423,7 +423,7 @@ class HandSession:
         def run():
             try:
                 if not self.warm: self._pending = (display_name(raw), None, None, None)
-                elif self.store:                    # 对手库：内存里直接取（启动时整表热加载）
+                elif self.store:                    # 对手库：按主键查库
                     d = self.store.lookup(raw)
                     name = d["name"] if d else display_name(raw)
                     self._pending = (name, d and d["stats"], self.store.pop(name), d)
@@ -468,7 +468,7 @@ class HandSession:
             except Exception: pass
 
     def _refresh_prof(self):
-        """有对手库时每手开始从内存取最新画像（ProfileUpdater 写完 md 会同步进库）"""
+        """有对手库时每手开始查库取最新画像（ProfileUpdater 写完 md 会同步进库）"""
         if self.store is None or not self.opp: return
         d = self.store.lookup(self.opp)
         if d and d.get("profile"): self.prof = {"profile": d["profile"], "ptype": d["ptype"]}

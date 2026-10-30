@@ -21,13 +21,13 @@ import oppdb
 
 def db():
     d = oppdb.open_db(P._hand_files(), P._profile_files())
-    print(f"[oppdb] {d.path.relative_to(ROOT)}：对手 {d.counts()[0]} 人 / 累计 {d.counts()[1]} 手，本次累计新增 {d.synced} 手，热加载 {d.load_ms:.1f}ms")
+    print(f"[oppdb] {d.path.relative_to(ROOT)}：对手 {d.counts()[0]} 人 / 累计 {d.counts()[1]} 手，本次累计新增 {d.synced} 手，{d.sync_ms:.0f}ms")
     return d
 
 
 def cmd_list(a):
     d = db()
-    rows = sorted(d.players.values(), key=lambda p: p.get("last_seen") or "", reverse=True)
+    rows = d.rows()
     if not rows: print("对手库为空"); return
     for p in rows:
         print(f"{p['name']:20s} {p['n_hands']:5d} 手  最近 {p.get('last_seen') or '-':19s}  桌 {p.get('tables') or '-'}  "

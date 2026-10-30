@@ -653,15 +653,15 @@ def make_session(a, model=None, live=False):
     hl = (tdir / "bot_hands.jsonl") if live and tdir else logroll.path(f"hands__{time.strftime('%m%d_%H%M')}.jsonl")
     warm = getattr(a, "warm", None)
     warm = live if warm is None else warm          # 真机默认热启动；回放默认不载入（历史里可能就有被回放的手）
-    # 对手昵称从截图识别（Bot.handle -> sess.see_opp），识别到/换人后取其跨桌统计+画像，下一手生效；--opp 只是可选初值
+    # 对手昵称从截图识别（Bot.handle -> sess.see_opp），识别到/换人后查库取其跨桌统计+画像，下一手生效；--opp 只是可选初值
     store = None
-    if warm:                                       # 对手库：jsonl 增量累计进 players 表（统计+画像），整表热加载进内存
+    if warm:                                       # 对手库：jsonl 增量累计进 players 表（统计+画像），识别到对手后按主键查库
         try:
             import oppdb
             from session_prompt import _hand_files, _profile_files
             store = oppdb.open_db(_hand_files(), _profile_files())
             np_, nh = store.counts()
-            print(f"[oppdb] 对手 {np_} 人 / 累计 {nh} 手已热加载（本次累计新增 {store.synced} 手，{store.load_ms:.1f}ms）", flush=True)
+            print(f"[oppdb] 对手 {np_} 人 / 累计 {nh} 手（本次累计新增 {store.synced} 手，{store.sync_ms:.0f}ms），识别到对手后按需查库", flush=True)
         except Exception as e:
             print(f"[oppdb] 打开失败，退回扫 jsonl: {type(e).__name__}: {e}", flush=True)
     upd = ProfileUpdater(model, tdir, opp, every=a.profile_every, store=store) if live and model and tdir and a.profile_every > 0 else None

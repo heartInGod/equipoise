@@ -1,4 +1,4 @@
-"""对手库（SQLite）：每个对手一行——累计统计 + 画像摘要；启动时整表热加载进内存，识别到对手后 O(1) 取出做热/冷启动。
+"""对手库（SQLite）：每个对手一行——累计统计 + 画像摘要；识别到对手后按主键直接查库（约 0.02ms，不做热加载）做热/冷启动。
 
 对局明细不进库，仍记在 jsonl（只追加）：tables/<桌>/bot_hands.jsonl（真机每手）、players/<opp>/hands.jsonl（tools/players.py 导入的回放手）。
 库只存从这些明细累计出来的结果：
@@ -7,6 +7,7 @@
     stats = session_prompt.opp_stats 的计数（JSON，全是可加的计数：库里累加，群体参考 = 全体合计 − 该对手）
     profile/ptype = players/<opp>.md（或桌内 <opp>.md，取较新）去掉更新日志的正文 / 「类型：」一行
   idx_players_last(last_seen)  —— 按最近出现排序列对手
+  agg(id=1, stats)             —— 全体对手统计合计（随累计一起更新）：群体参考 = agg − 该对手，两次主键查询
   sources(path PK, offset)     —— 每个 jsonl 已累计到的字节偏移：只读新追加的完整行，避免重扫 / 重复累计
 真机每手结束：session 先把这一手追加到 bot_hands.jsonl，再 sync 该文件（只读刚追加的那一行）。
 """
@@ -24,6 +25,7 @@ CREATE TABLE IF NOT EXISTS players(
   n_hands INTEGER NOT NULL DEFAULT 0, tables TEXT NOT NULL DEFAULT '', stats TEXT,
   profile TEXT, ptype TEXT, profile_mtime REAL NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS idx_players_last ON players(last_seen);
+CREATE TABLE IF NOT EXISTS agg(id INTEGER PRIMARY KEY CHECK(id=1), stats TEXT);
 CREATE TABLE IF NOT EXISTS sources(path TEXT PRIMARY KEY, offset INTEGER NOT NULL DEFAULT 0);
 """
 COLS = ("key", "name", "first_seen", "last_seen", "n_hands", "tables", "stats", "profile", "ptype", "profile_mtime")
@@ -52,8 +54,11 @@ class OppDB:
         self.conn = sqlite3.connect(str(self.path), check_same_thread=False, isolation_level=None)
         self.conn.execute("PRAGMA journal_mode=WAL"); self.conn.execute("PRAGMA synchronous=NORMAL")
         self.conn.executescript(SCHEMA)
-        self.players, self.total = {}, None     # 内存：{key: 行 dict(stats 已解析)}、全体 stats 合计
-        self.load_ms, self.synced = None, 0
+        if self._total() is None:                      # 旧库没有合计行：从各对手的行补算一次
+            tot = None
+            for (st,) in self.conn.execute("SELECT stats FROM players WHERE stats IS NOT NULL"): tot = add_stats(tot, json.loads(st))
+            if tot: self.conn.execute("INSERT OR REPLACE INTO agg(id,stats) VALUES(1,?)", (json.dumps(tot),))
+        self.synced, self.sync_ms = 0, None
 
     def close(self):
         with self.lock: self.conn.close()
@@ -68,10 +73,13 @@ class OppDB:
     def _put(self, d):
         self.conn.execute(f"INSERT OR REPLACE INTO players({','.join(COLS)}) VALUES({','.join('?' * len(COLS))})",
                           tuple(json.dumps(d[c]) if c == "stats" and d[c] is not None else d[c] for c in COLS))
-        old = self.players.get(d["key"])               # 同步内存（行 + 全体合计）
-        if old and old["stats"] and self.total: self.total = sub_stats(self.total, old["stats"])
-        self.total = add_stats(self.total, d["stats"])
-        self.players[d["key"]] = dict(d)
+
+    def _total(self):
+        r = self.conn.execute("SELECT stats FROM agg WHERE id=1").fetchone()
+        return json.loads(r[0]) if r and r[0] else None
+
+    def _add_total(self, S):
+        self.conn.execute("INSERT OR REPLACE INTO agg(id,stats) VALUES(1,?)", (json.dumps(add_stats(self._total(), S)),))
 
     def _new(self, k, name):
         return {"key": k, "name": name, "first_seen": None, "last_seen": None, "n_hands": 0, "tables": "",
@@ -89,7 +97,9 @@ class OppDB:
                 d["first_seen"] = min([d["first_seen"]] + ts) if d["first_seen"] else min(ts)
                 d["last_seen"] = max([d["last_seen"] or ""] + ts)
             d["n_hands"] += len(hs)
-            d["stats"] = add_stats(d["stats"], P.opp_stats(hs))
+            S = P.opp_stats(hs)
+            d["stats"] = add_stats(d["stats"], S)
+            self._add_total(S)
             if table_id and table_id not in d["tables"].split(","):
                 d["tables"] = ",".join(filter(None, [d["tables"], table_id]))
             self._put(d)
@@ -121,7 +131,7 @@ class OppDB:
                                       (key, off + end))
                     self.conn.execute("COMMIT")
                 except Exception:
-                    self.conn.execute("ROLLBACK"); self.load(); raise
+                    self.conn.execute("ROLLBACK"); raise
         return n
 
     def sync_profiles(self, files):
@@ -141,45 +151,39 @@ class OppDB:
                 self._put(d); n += 1
         return n
 
-    # ---- 读 ----
-    def load(self):
-        """热加载：整张 players 表进内存，并算好全体统计合计"""
-        t0 = time.time()
-        with self.lock:
-            ps = {}
-            for r in self.conn.execute(f"SELECT {','.join(COLS)} FROM players"):
-                d = dict(zip(COLS, r)); d["stats"] = json.loads(d["stats"]) if d["stats"] else None
-                ps[d["key"]] = d
-            total = None
-            for d in ps.values(): total = add_stats(total, d["stats"])
-            self.players, self.total = ps, total
-        self.load_ms = (time.time() - t0) * 1000
-        return self
-
+    # ---- 读（直接查库，主键索引） ----
     def lookup(self, name):
-        """昵称（可含 OCR 误差）→ 该对手行的副本（stats 为累计计数）；没见过返回 None"""
-        with self.lock:
-            d = self.players.get(wpstate.name_key(name))
-            return dict(d, stats=dict(d["stats"]) if d["stats"] else None) if d else None
+        """昵称（可含 OCR 误差）→ 该对手行（stats 为累计计数）；没见过返回 None"""
+        with self.lock: return self._row(wpstate.name_key(name))
 
     def pop(self, name=None):
         """群体参考 = 全体合计 − 该对手；没有其他对手的样本返回 None"""
         with self.lock:
-            if not self.total: return None
-            d = self.players.get(wpstate.name_key(name)) if name else None
-            S = sub_stats(self.total, d["stats"] if d else None)
+            total = self._total()
+            if not total: return None
+            d = self._row(wpstate.name_key(name)) if name else None
+        S = sub_stats(total, d["stats"] if d else None)
         return S if S["n"] else None
 
+    def rows(self):
+        """所有对手，按最近出现倒序"""
+        with self.lock:
+            return [dict(zip(COLS, r)) for r in self.conn.execute(f"SELECT {','.join(COLS)} FROM players ORDER BY last_seen DESC")]
+
     def counts(self):
-        return len(self.players), sum(d["n_hands"] for d in self.players.values())
+        with self.lock:
+            n, h = self.conn.execute("SELECT COUNT(*), COALESCE(SUM(n_hands),0) FROM players").fetchone()
+        return n, h
 
     def known_names(self):
-        return [d["name"] for d in self.players.values()]
+        with self.lock: return [r[0] for r in self.conn.execute("SELECT name FROM players")]
 
 
 def open_db(hand_files=(), profile_files=(), path=DB):
-    """启动用：打开库 → 增量累计 jsonl、刷新画像 → 整表热加载进内存"""
-    db = OppDB(path).load()
+    """启动用：打开库 → 增量累计 jsonl 新增行、刷新画像（不做热加载，之后按需查库）"""
+    t0 = time.time()
+    db = OppDB(path)
     db.synced = db.sync(hand_files)
     db.sync_profiles(profile_files)
-    return db.load()
+    db.sync_ms = (time.time() - t0) * 1000
+    return db

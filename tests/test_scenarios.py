@@ -687,7 +687,7 @@ class TestSession(unittest.TestCase):
 
 
 class TestOppDB(unittest.TestCase):
-    """对手库 SQLite（players 表：累计统计+画像）：增量累计/不重复计数/OCR 容错/群体统计减法/画像热加载/接入 HandSession"""
+    """对手库 SQLite（players 表：累计统计+画像，按需查库）：增量累计/不重复计数/OCR 容错/群体统计减法/画像/接入 HandSession"""
     def setUp(self):
         import oppdb, session_prompt as P
         self.O, self.P, self.tmp = oppdb, P, Path(tempfile.mkdtemp())
@@ -715,7 +715,7 @@ class TestOppDB(unittest.TestCase):
         self.assertEqual(self.db.sync([f]), 1)
         with open(f, "a") as fo: fo.write(json.dumps(self.h("villain", 6))[20:] + "\n")
         self.assertEqual(self.db.sync([f]), 1)
-        self.db.close(); self.db = self.O.OppDB(self.tmp / "o.db").load()                     # 重开：热加载整表
+        self.db.close(); self.db = self.O.OppDB(self.tmp / "o.db")                            # 重开后直接查库
         v = self.db.lookup("vi11ain")                                                         # OCR l→1 容错
         self.assertEqual((v["name"], v["n_hands"], v["tables"], v["last_seen"][-2:]), ("villain", 5, "t1", "06"))
         self.assertEqual(v["stats"], self.P.opp_stats([self.h("villain", i) for i in (0, 1, 2, 5, 6)]))
@@ -727,10 +727,9 @@ class TestOppDB(unittest.TestCase):
         self.db.add_hands([self.h("villain", i) for i in range(4)] + [self.h("other", i, pos="BTN") for i in range(3)])
         self.assertEqual(self.db.pop("villain"), P.opp_stats([self.h("other", i, pos="BTN") for i in range(3)]))
         self.assertEqual(self.db.pop()["n"], 7); self.assertEqual(self.db.pop("newbie")["n"], 7)
-        self.db.add_hands([self.h("other", 30)])                                              # 内存合计随写入更新
-        self.assertEqual(self.db.pop("villain")["n"], 4)
-        self.assertEqual(self.db.load().pop("villain")["n"], 4)
-        self.assertIsNone(self.O.OppDB(self.tmp / "empty.db").load().pop("x"))
+        self.db.add_hands([self.h("other", 30)])                                              # 合计随写入更新
+        self.assertEqual(self.db.pop("villain")["n"], 4); self.assertEqual(self.db.counts(), (2, 8))
+        self.assertIsNone(self.O.OppDB(self.tmp / "empty.db").pop("x"))
 
     def test_profiles(self):
         players = self.tmp / "players"; players.mkdir()
@@ -764,17 +763,19 @@ class TestOppDB(unittest.TestCase):
         return mk(hero=hero, buttons={"弃牌": FOLD, "跟注": CHECK, "加注": RAISE},
                   nums={"pot": 3, "opp_bet": 2, "my_bet": 1, "to_call": 1, "my_stack": stack})
 
-    def test_load_speed(self):
-        """1 万个对手 / 20 万手：增量累计、整表热加载、查找耗时"""
+    def test_query_speed(self):
+        """1 万个对手 / 20 万手：增量累计耗时；不热加载，直接查库 lookup+群体参考的耗时"""
         f = self.tmp / "tables" / "big" / "bot_hands.jsonl"
         self.jl(f, [self.h(f"p{i % 10000}", i % 60) for i in range(200000)], "w")
         t0 = time.time(); self.db.sync([f]); t_sync = time.time() - t0
-        db = self.O.OppDB(self.tmp / "o.db").load()
+        db = self.O.OppDB(self.tmp / "o.db")
+        t0 = time.time(); db.sync([f]); t_noop = (time.time() - t0) * 1000
         t0 = time.time()
         for i in range(10000): db.lookup(f"p{i}"); db.pop(f"p{i}")
-        t_lk = (time.time() - t0) / 10000 * 1000
-        print(f"\n[oppdb] 20万手累计 {t_sync:.1f}s，1万对手整表热加载 {db.load_ms:.0f}ms，lookup+群体参考 {t_lk:.3f}ms/次", file=sys.stderr)
-        self.assertEqual(db.counts(), (10000, 200000)); self.assertLess(db.load_ms, 3000)
+        t_q = (time.time() - t0) / 10000 * 1000
+        print(f"\n[oppdb] 20万手首次累计 {t_sync:.1f}s，无新增时启动同步 {t_noop:.1f}ms，查库 lookup+群体参考 {t_q:.3f}ms/次", file=sys.stderr)
+        self.assertEqual(db.counts(), (10000, 200000)); self.assertLess(t_q, 5)
+        self.assertEqual(db.pop("p1")["n"], 200000 - 20)
         db.close()
 
 

@@ -24,7 +24,7 @@ description: 德州扑克（无限注 NLH）职业牌手助手 + WePoker 真机�
 | `tables/<table_id>/` | 每张桌：`table.md` + `player.log` + 每位玩家 `<user>.md` | 读写对局数据 |
 | `poker_bot.py` | 命令行入口（list / tprobe / tlive）、模型配置读取 `load_providers`、通用 `call_model` | 跑机器人 |
 | `bot_core.py` | 机器人核心：`TPROMPT`、`Bot.handle`（每帧状态机）、`execute` 动作映射、`rule_decide` 本地规则兜底、`Decider`（对冲请求+deadline）、`AnthropicKA` 长连接池、`Grabber` 后台截图、`AdbIO` 常驻 adb shell、`AsyncWriter` | 改策略/流程/延迟 |
-| `tests/test_scenarios.py` | 场景测试（97 例，不连手机不调模型）；场景清单 `tests/SCENARIOS.md`；golden 生成 `tests/make_golden.py` | 改代码后必跑 |
+| `tests/test_scenarios.py` | 场景测试（100 例，不连手机不调模型）；场景清单 `tests/SCENARIOS.md`；golden 生成 `tests/make_golden.py` | 改代码后必跑 |
 | `session_prompt.py` | `--prompt session`：`SYS_STATIC` 开局长 system（牌桌/规则/策略/偏移表 + `_reference()` 参考资料块：gto.md §8.1 单挑统计参考值/§6.2/§2.5/§2.6/§7、technology.md §2.4/§4.1/§4.2，改这些章节会直接改 prompt；prompt caching）+ 每手注入对手画像与最近几手；`HandSession` 每次决策发一条本手完整记录（`手牌 #n`、当前手牌，紧跟未弃牌对手的本局统计画像块，再逐街逐动作 `位置[用户名] 动作，剩余 xBB`、BB 单位快照（翻后含 `SPR`=双方剩余较小者÷有效底池），结尾“现在根据用户行为、画像和相关数据进行决策行动”），本局统计由 `opp_stats()` 从已结束的手算出、`walk()` 算剩余筹码；手结束写结果摘要；`ProfileUpdater` 每 N 手异步更新 `<opp>.md` | 改 session 模式 prompt/画像接入 |
 | `tools/preflop_rank.json` | 169 种起手牌单挑胜率与排名百分位（`tools/make_preflop_rank.py` 生成），`state.preflop_rank()` 读，状态里显示「起手牌 前X%」 | 翻前范围 |
 | `tools/state.py` | 截图 → 文字状态（常驻 OCR 进程 `_OCRServer` + 模板识牌，parse≈0.2s），含 `facts`/`made_desc`（听牌含去重“合计 N outs”）/`draw_outs`/`draw_eq`/`draw_line`（精确听牌胜率）/`preset_off`/`usable_presets`（灰档识别）/`HandHist`（换街用底池增量校正“下注到 ?”） | 机器人识别问题 |
@@ -37,8 +37,8 @@ description: 德州扑克（无限注 NLH）职业牌手助手 + WePoker 真机�
 | `adb_act.sh` | 早期 ADB 快捷脚本（固定坐标，部分未验证） | 只在 `tools/act.py` 不可用时 |
 | `logs/` | 系统日志，按天滚动：`logs/<YYYY-MM-DD>/`（`text__<model>.jsonl` 为文本模式主日志，另有 `unknown.jsonl`、`act.jsonl`、`replay__*.jsonl`），只保留最近 90 天（`tools/logroll.py`，可用 `EQUIPOISE_LOG_KEEP_DAYS` 调整）；根下 `stack_cache.json` 为分析缓存、`_backup/` 为旧代码备份 | 复盘 |
 | `model_test/` | 截图样本：`live/` 实时帧、`unknown/` 无法处理的界面、`act/` 动作前后对比 | 调试识别/点击 |
-| `players/` | **跨桌对手库**：`players/opponents.db`（SQLite，不进 git，可随时 `players.py rebuild` 重建）主体是 `players` 表——每个对手一行：`key`(name_key，容忍 0/O) 主键、累计统计计数 `stats`(JSON，可加减)、画像摘要 `profile`/`ptype`、手数/桌/首末出现时间；另有 `sources(path, offset)` 记 jsonl 已累计到的字节位置。**对局明细不进库**，仍在 jsonl（只追加）：`tables/<桌>/bot_hands.jsonl`、`players/<opp>/hands.jsonl`（导入的回放手）。画像原文 `players/<opp>.md`（`ProfileUpdater` 写，写完同步进库；桌内 `<opp>.md` 也收录，取较新） | 换桌/新对手 |
-| `tools/oppdb.py` | 对手库实现：`open_db`（启动时增量累计 jsonl 新增行 + 刷新画像，不热加载）、`lookup`(按主键查库)、`pop`(群体参考=`agg` 合计行−该对手)、`sync`、`sync_profiles` | 改库结构 |
+| `players/` | **跨桌对手库**：`players/opponents.db`（SQLite，不进 git，可随时 `players.py rebuild` 重建）主体是 `players` 表——每个对手一行：`key`(name_key，容忍 0/O) 主键、首末出现时间、每个统计计数器一列（`n` 手数、`vp` 入池、`pfr`、`b3`/`b4`、`cb_opp`/`cb`、`wtsd` 等，口径见 `session_prompt.STAT_FIELDS`）、画像摘要 `profile`/`ptype`；视图 `player_rates` 直接给出百分比（vpip/pfr/3B/4B/cbet/弃cbet/check-raise/WTSD/WSD/AF 等）；另有 `sources(path, offset)` 记 jsonl 已累计到的字节位置。**对局明细不进库**，仍在 jsonl（只追加）：`tables/<桌>/bot_hands.jsonl`、`players/<opp>/hands.jsonl`（导入的回放手）。画像原文 `players/<opp>.md`（`ProfileUpdater` 写，写完同步进库；桌内 `<opp>.md` 也收录，取较新） | 换桌/新对手 |
+| `tools/oppdb.py` | 对手库实现：`open_db`（启动时增量累计 jsonl 新增行 + 刷新画像，不热加载）、`lookup`(按主键查库)、`pop`(群体参考=全体合计−该对手，合计首次 SUM 后缓存增量维护)、`rates`(读 `player_rates`)、`sync`、`sync_profiles`；改表结构要升 `VERSION`，打开时 `user_version` 不符会删表并从 jsonl 全量重算 | 改库结构 |
 | `tools/players.py` | 对手库：`list` 各对手手数/桌/最近出现/画像、`show <opp>` 跨桌统计块+画像、`import <hands__*.jsonl> [--opp X]` 把回放手牌写入 `players/<opp>/hands.jsonl`（按牌型去重）并累计进库、`rebuild` 删库从 jsonl 全量重建 | 查看/补充对手历史 |
 | `tools/frameroll.py` | `model_test/live` 帧滚动清理：保护 golden（`tests/golden_frames.json`）和测试按名引用的帧，其余按修改时间删最旧，直到未保护帧 ≤ 30GB（`EQUIPOISE_LIVE_KEEP_GB`，0=不清理）；`tlive` 真机启动时自动执行，命令行默认只预览、`--apply` 才删 | 磁盘占用 |
 | `.gitignore` / git | 项目已 git 初始化；`model_test/`、`logs/`、`pluribus-poker-AI/`、`tools/ocr` 编译产物、`*.md.bak` 不入库 | 改代码后提交 |
@@ -162,7 +162,7 @@ python3 tools/players.py list | show <opp> | import logs/<日期>/hands__*.jsonl
 
 ## 4. 已知现状与缺口
 
-- 对手画像热/冷启动：session 模式（`--warm`，真机默认开、回放默认关，避免回放读到自己）启动时打开对手库 `players/opponents.db`：jsonl 新增行增量累计进 `players` 表（每人一行统计+画像，另有 `agg` 全体合计行；无新增时约 0.2ms），**不做热加载**，识别到对手后按主键查库（1 万对手/20 万手时查找+群体参考约 0.06ms）；每手结束的记录交给 session 的**后台写线程**（主线程只入队，不做文件/数据库 IO）：按顺序追加 `bot_hands.jsonl` → 累计进库（仅真机，回放不写库）→ `ProfileUpdater` 回调 → 查好最新画像，下一手开始时直接换上；退出时 `sess.flush()` 等写完；库打不开时退回扫 jsonl。手牌下方画像显示“累计N手(此前X+本局Y)”；对手累计 <30 手时附“群体参考”（其他对手汇总），全新对手描述为“按群体倾向小幅偏移”。对手昵称**从截图自动识别**（`state.opp_name`：顶部中央 (720,416) 名字行；`name_key` 归一化容忍 0/O、l/1、空格/下划线），最近 8 帧里同一昵称 ≥3 次即确认，后台线程查库取其累计统计+画像+群体参考（全体−该对手），**下一手开始生效**；对手未识别时结束的手先缓存，识别后补上昵称再写；桌上换人自动切换（本局统计/近况清空）。`--opp` 只是可选初值。
+- 对手画像热/冷启动：session 模式（`--warm`，真机默认开、回放默认关，避免回放读到自己）启动时打开对手库 `players/opponents.db`：jsonl 新增行增量累计进 `players` 表（每人一行统计列+画像；无新增时约 0.2ms），**不做热加载**，识别到对手后按主键查库（1 万对手/20 万手时查找+群体参考约 0.06ms）；每手结束的记录交给 session 的**后台写线程**（主线程只入队，不做文件/数据库 IO）：按顺序追加 `bot_hands.jsonl` → 累计进库（仅真机，回放不写库）→ `ProfileUpdater` 回调 → 查好最新画像，下一手开始时直接换上；退出时 `sess.flush()` 等写完；库打不开时退回扫 jsonl。手牌下方画像显示“累计N手(此前X+本局Y)”；对手累计 <30 手时附“群体参考”（其他对手汇总），全新对手描述为“按群体倾向小幅偏移”。对手昵称**从截图自动识别**（`state.opp_name`：顶部中央 (720,416) 名字行；`name_key` 归一化容忍 0/O、l/1、空格/下划线），最近 8 帧里同一昵称 ≥3 次即确认，后台线程查库取其累计统计+画像+群体参考（全体−该对手），**下一手开始生效**；对手未识别时结束的手先缓存，识别后补上昵称再写；桌上换人自动切换（本局统计/近况清空）。`--opp` 只是可选初值。
 - 机器人的对局只写到 `logs/`，**还没有自动写入** `tables/<table_id>/player.log` 和更新画像；目前需要按工作流 C 手动整理。
 - `tables/20261029_wepoker_practice/`：HU 单挑练习局，对手 `little00`。`player.log` 还没有手牌，座位表里引用的 `little00.md` 也还没建。
 - short/long 模式的 `TPROMPT` 是写死的通用单挑策略，不读画像；**session 模式**会读 `tables/<桌>/<opp>.md` 注入 system（没有画像时按基线打）。画像自动更新只基于代码记录的行动线与盈亏，看不到对手亮牌（parse 尚未识别摊牌），需要时仍按工作流 C 手动补。

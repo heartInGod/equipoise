@@ -202,48 +202,104 @@ def _pct(a, b):
     return f"{a}/{b}={a / b * 100:.0f}%" if b else "无样本"
 
 
+# 对手统计计数器（全是可加的计数；“X_opp”=机会数，配对的计数=做了几次）。对手库 players 表每项一列，player_rates 视图换算成百分比
+STAT_FIELDS = (
+    ("n", "累计手数"),
+    ("vp_n", "翻前有主动决策的手（VPIP/PFR 分母）"), ("vp", "主动入池 VPIP（入池率）"), ("pfr", "翻前加注 PFR"),
+    ("btn", "按钮位有行动"), ("open", "按钮位开池加注"), ("limp", "按钮位平跟 limp"),
+    ("vs_open", "大盲面对我方开池"), ("b3", "3bet"), ("bb_call", "大盲跟注开池"), ("bb_fold", "大盲弃牌"),
+    ("vs_limp", "大盲面对我方 limp"), ("iso", "对 limp 加注"),
+    ("f3_opp", "开池后面对我方 3bet"), ("f3_fold", "面对 3bet 弃牌"), ("b4", "4bet"),
+    ("f4_opp", "3bet 后面对我方 4bet"), ("f4_fold", "面对 4bet 弃牌"),
+    ("flop", "看到翻牌"),
+    ("cb_opp", "翻牌 cbet 机会"), ("cb", "翻牌 cbet"),
+    ("cb2_opp", "转牌二次 cbet 机会"), ("cb2", "转牌二次 cbet"),
+    ("fcb_opp", "面对我方翻牌 cbet"), ("fcb", "面对 cbet 弃牌"), ("rcb", "面对 cbet 加注"),
+    ("xr_opp", "翻牌让牌后面对我方下注"), ("xr", "翻牌 check-raise"),
+    ("agg", "翻后下注/加注次数"), ("calls", "翻后跟注次数"),
+    ("wtsd", "到摊牌"), ("wsd", "摊牌赢（我方亏）"),
+)
+STAT_KEYS = tuple(k for k, _ in STAT_FIELDS)
+_RAISE = re.compile(r"加注|全下|下注到")
+
+
 def opp_stats(hands):
-    """从本局已结束的手（rec: pos=我方位置 BTN/BB, ev, board, how）统计对手数据。看不到对手按钮位直接弃牌的手。"""
-    S = dict(n=len(hands), btn=0, open=0, limp=0, vs_open=0, b3=0, bb_call=0, bb_fold=0, f3_opp=0, f3_fold=0,
-             vp=0, vp_n=0, pfr=0, cb_opp=0, cb=0, fcb_opp=0, fcb=0, agg=0, calls=0, flop=0, wtsd=0)
+    """从已结束的手（rec: pos=我方位置 BTN/BB, ev, board, how, delta）统计对手计数（字段见 STAT_FIELDS）。
+    看不到对手按钮位直接弃牌的手（这类手不进记录），所以按钮位的分母是“有行动”的手。"""
+    S = dict.fromkeys(STAT_KEYS, 0); S["n"] = len(hands)
+    opp_r = lambda e: e.startswith("对手") and bool(_RAISE.search(e))
+    me_r = lambda e: e.startswith("我方") and bool(_RAISE.search(e))
+    nxt = lambda seq, i, who: next((j for j in range(i, len(seq)) if seq[j].startswith(who)), None)
     for h in hands:
         ev, pos, board = h.get("ev") or [], h.get("pos"), h.get("board") or []
         pre = [e for s, e in ev if s == "翻前"]
         last = ev[-1][1] if ev else ""
-        if pos == "BB":                                   # 对手在按钮位
-            k = next((i for i, e in enumerate(pre) if e.startswith("对手开局加注") or "对手平跟" in e), None)
-            if k is not None:
+        folded_pre = not board and last.startswith("我方")          # 翻前以我方动作收尾 = 对手弃牌
+        if pos == "BB":                                               # 对手在按钮位（先行动）
+            k = nxt(pre, 0, "对手")
+            if k is not None and ("平跟" in pre[k] or opp_r(pre[k])):
                 S["btn"] += 1; S["vp"] += 1; S["vp_n"] += 1
                 if "平跟" in pre[k]: S["limp"] += 1
                 else:
                     S["open"] += 1; S["pfr"] += 1
-                    if any(e.startswith("我方加注") or e.startswith("我方全下") for e in pre[k + 1:]):
+                    j = nxt(pre, k + 1, "我方")
+                    if j is not None and me_r(pre[j]):               # 我方 3bet
                         S["f3_opp"] += 1
-                        if not board and (last.startswith("我方加注") or last.startswith("我方全下")): S["f3_fold"] += 1
-        elif pos == "BTN":                                # 对手在大盲
-            k = next((i for i, e in enumerate(pre) if e.startswith("我方")), None)
-            if k is not None and (pre[k].startswith("我方加注") or pre[k].startswith("我方全下")):
+                        r = nxt(pre, j + 1, "对手")
+                        if r is None and folded_pre: S["f3_fold"] += 1
+                        elif r is not None and opp_r(pre[r]): S["b4"] += 1
+        elif pos == "BTN":                                            # 对手在大盲
+            k = nxt(pre, 0, "我方")
+            if k is not None and me_r(pre[k]):                        # 我方开池
                 S["vs_open"] += 1; S["vp_n"] += 1
-                rest = pre[k + 1:]
-                if any(e.startswith("对手加注") for e in rest): S["b3"] += 1; S["vp"] += 1; S["pfr"] += 1
-                elif board or any(e.startswith("对手跟注") for e in rest): S["bb_call"] += 1; S["vp"] += 1
-                elif last.startswith("我方"): S["bb_fold"] += 1
-        # 翻前最后的进攻方
-        agg = next((("opp" if e.startswith("对手") else "me") for e in reversed(pre) if re.search(r"加注|全下", e)), None)
+                r = nxt(pre, k + 1, "对手")
+                if r is not None and opp_r(pre[r]):                   # 对手 3bet
+                    S["b3"] += 1; S["vp"] += 1; S["pfr"] += 1
+                    j = nxt(pre, r + 1, "我方")
+                    if j is not None and me_r(pre[j]):               # 我方 4bet
+                        S["f4_opp"] += 1
+                        if nxt(pre, j + 1, "对手") is None and folded_pre: S["f4_fold"] += 1
+                elif board or (r is not None and "跟注" in pre[r]): S["bb_call"] += 1; S["vp"] += 1
+                elif folded_pre: S["bb_fold"] += 1
+            elif k is not None and ("跟注" in pre[k] or "平跟" in pre[k]):   # 我方 limp
+                S["vs_limp"] += 1; S["vp_n"] += 1
+                r = nxt(pre, k + 1, "对手")
+                if r is not None and opp_r(pre[r]): S["iso"] += 1; S["vp"] += 1; S["pfr"] += 1
+        agg = next((("opp" if e.startswith("对手") else "me") for e in reversed(pre) if _RAISE.search(e)), None)   # 翻前最后的进攻方
         if len(board) >= 3:
             S["flop"] += 1
-            if "摊牌" in (h.get("how") or ""): S["wtsd"] += 1
             fl = [e for s, e in ev if s == "翻牌"]
-            first = next((e for e in fl if e.startswith("对手") or re.match(r"我方(下注|加注|全下)", e)), None)
-            if agg == "opp" and first and first.startswith("对手"):
-                S["cb_opp"] += 1; S["cb"] += bool(re.match(r"对手(下注|加注)", first))
-            if agg == "me" and first and first.startswith("我方"):
+            tu = [e for s, e in ev if s == "转牌"]
+            bet = lambda e, who: bool(re.match(who + r"(下注|加注|全下)", e))
+            def first_act(seq, who, other):
+                """who 本街第一个动作（之前 other 没有下注才算有 cbet 机会）；返回 (下标, 是否有机会)"""
+                i = next((n for n, e in enumerate(seq) if e.startswith(who)), None)
+                return i, i is not None and not any(bet(e, other) for e in seq[:i])
+            o, ok = first_act(fl, "对手", "我方")
+            opp_cb = False
+            if agg == "opp" and ok:                                   # 对手翻牌 cbet 机会（我方没有先下注）
+                S["cb_opp"] += 1; opp_cb = bet(fl[o], "对手"); S["cb"] += opp_cb
+            if opp_cb and len(board) >= 4:                           # 转牌二次 cbet
+                o2, ok2 = first_act(tu, "对手", "我方")
+                if ok2: S["cb2_opp"] += 1; S["cb2"] += bet(tu[o2], "对手")
+            m, okm = first_act(fl, "我方", "对手")
+            if agg == "me" and okm and bet(fl[m], "我方"):             # 我方 cbet
                 S["fcb_opp"] += 1
-                after = fl[fl.index(first) + 1:]
-                if not any(re.match(r"对手(跟注|加注)", e) for e in after) and len(board) == 3 and last == first: S["fcb"] += 1
+                r = next((e for e in fl[m + 1:] if e.startswith("对手")), None)
+                if r and bet(r, "对手"): S["rcb"] += 1
+                elif r is None and len(board) == 3 and last == fl[m]: S["fcb"] += 1
+            i = next((n for n, e in enumerate(fl) if e.startswith("对手")), None)     # 翻牌 check-raise
+            if i is not None and fl[i].startswith("对手让牌"):
+                j = next((n for n in range(i + 1, len(fl)) if re.match(r"我方(下注|加注|全下)", fl[n])), None)
+                if j is not None:
+                    S["xr_opp"] += 1
+                    r = next((e for e in fl[j + 1:] if e.startswith("对手")), None)
+                    S["xr"] += bool(r and re.match(r"对手(加注|全下)", r))
+            if "摊牌" in (h.get("how") or ""):
+                S["wtsd"] += 1; S["wsd"] += (h.get("delta") or 0) < 0
         for s, e in ev:
             if s == "翻前": continue
-            if re.match(r"对手(下注|加注)", e): S["agg"] += 1
+            if re.match(r"对手(下注|加注|全下)", e): S["agg"] += 1
             elif e.startswith("对手跟注"): S["calls"] += 1
     return S
 
@@ -282,11 +338,15 @@ def profile_block(S, desc, n_hist=0, pop=None):
 
 
 def _stat_lines(S, scope):
+    S = dict(dict.fromkeys(STAT_KEYS, 0), **S)
     af = f"{S['agg'] / S['calls']:.1f}" if S["calls"] else "—"
-    return [f"  翻前：{scope} 开池{_pct(S['open'], S['btn'])}、limp{_pct(S['limp'], S['btn'])}、3B{_pct(S['b3'], S['vs_open'])}、"
-            f"大盲面对开池弃{_pct(S['bb_fold'], S['vs_open'])}、面对3B弃{_pct(S['f3_fold'], S['f3_opp'])}、VPIP{_pct(S['vp'], S['vp_n'])}",
-            f"  翻牌：cbet{_pct(S['cb'], S['cb_opp'])}、面对cbet弃{_pct(S['fcb'], S['fcb_opp'])}、看翻牌{S['flop']}手",
-            f"  转牌/河牌：翻后下注加注{S['agg']}次/跟注{S['calls']}次（AF {af}）、到摊牌{_pct(S['wtsd'], S['flop'])}"]
+    return [f"  翻前：{scope} VPIP{_pct(S['vp'], S['vp_n'])}、PFR{_pct(S['pfr'], S['vp_n'])}、开池{_pct(S['open'], S['btn'])}、limp{_pct(S['limp'], S['btn'])}、"
+            f"3B{_pct(S['b3'], S['vs_open'])}、4B{_pct(S['b4'], S['f3_opp'])}、大盲面对开池弃{_pct(S['bb_fold'], S['vs_open'])}、"
+            f"面对3B弃{_pct(S['f3_fold'], S['f3_opp'])}、面对4B弃{_pct(S['f4_fold'], S['f4_opp'])}、对limp加注{_pct(S['iso'], S['vs_limp'])}",
+            f"  翻牌：cbet{_pct(S['cb'], S['cb_opp'])}、面对cbet弃{_pct(S['fcb'], S['fcb_opp'])}/加注{_pct(S['rcb'], S['fcb_opp'])}、"
+            f"check-raise{_pct(S['xr'], S['xr_opp'])}、看翻牌{S['flop']}手",
+            f"  转牌/河牌：转牌二次cbet{_pct(S['cb2'], S['cb2_opp'])}、翻后下注加注{S['agg']}次/跟注{S['calls']}次（AF {af}）、"
+            f"到摊牌{_pct(S['wtsd'], S['flop'])}、摊牌赢{_pct(S['wsd'], S['wtsd'])}"]
 
 
 def walk(ev, hero_pos):

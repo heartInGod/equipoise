@@ -718,7 +718,8 @@ class TestOppDB(unittest.TestCase):
 
     def test_schema_and_incremental_sync(self):
         cols = {r[1] for r in self.db.conn.execute("PRAGMA table_info(players)")}
-        self.assertTrue({"key", "stats", "profile", "ptype", "n_hands", "last_seen"} <= cols)
+        self.assertTrue({"key", "n", "vp", "vp_n", "b3", "b4", "cb", "cb_opp", "profile", "ptype", "last_seen"} <= cols)
+        self.assertFalse({"tables", "stats"} & cols)                                          # 统计拆成列，不记桌
         self.assertIn("idx_players_last", {r[1] for r in self.db.conn.execute("PRAGMA index_list(players)")})
         self.assertNotIn("hands", {r[0] for r in self.db.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")})   # 明细不进库
         f = self.tmp / "tables" / "t1" / "bot_hands.jsonl"
@@ -730,15 +731,49 @@ class TestOppDB(unittest.TestCase):
         self.assertEqual(self.db.sync([f]), 1)
         self.db.close(); self.db = self.O.OppDB(self.tmp / "o.db")                            # 重开后直接查库
         v = self.db.lookup("vi11ain")                                                         # OCR l→1 容错
-        self.assertEqual((v["name"], v["n_hands"], v["tables"], v["last_seen"][-2:]), ("villain", 5, "t1", "06"))
+        self.assertEqual((v["name"], v["n_hands"], v["last_seen"][-2:]), ("villain", 5, "06"))
         self.assertEqual(v["stats"], self.P.opp_stats([self.h("villain", i) for i in (0, 1, 2, 5, 6)]))
         self.assertIsNone(self.db.lookup("nobody"))
         self.assertEqual(self.db.sync([f]), 0)
+        r = self.db.rates("villain")[0]                                                       # 视图：百分比
+        self.assertEqual((r["hands"], r["vpip"], r["open"], r["b3"]), (5, 100.0, 100.0, None))
+
+    def test_schema_upgrade_rebuilds(self):
+        """表结构版本变了：清空重建，再从 jsonl 重新累计（不丢数据）"""
+        f = self.tmp / "tables" / "t1" / "bot_hands.jsonl"
+        self.jl(f, [self.h("villain", i) for i in range(3)]); self.db.sync([f])
+        self.db.conn.execute("PRAGMA user_version = 1"); self.db.close()
+        self.db = self.O.OppDB(self.tmp / "o.db")
+        self.assertIsNone(self.db.lookup("villain"))
+        self.assertEqual(self.db.sync([f]), 3); self.assertEqual(self.db.lookup("villain")["n_hands"], 3)
+
+    def test_stat_counters(self):
+        """新增统计口径：4B / 面对4B弃 / 对limp加注 / 我方cbet（对手先让牌）/ 转牌二次cbet / check-raise / 摊牌赢"""
+        P = self.P
+        H = lambda pos, ev, board=(), how="", delta=0: {"pos": pos, "ev": ev, "board": list(board), "how": how, "delta": delta}
+        B = ("2c", "7d", "9h", "Ks", "3d")
+        S = P.opp_stats([
+            H("BB", [["翻前", "对手开局加注到 4"], ["翻前", "我方加注到 12（3bet）"], ["翻前", "对手加注到 30（4bet）"], ["翻前", "我方弃牌"]]),
+            H("BTN", [["翻前", "我方加注到 4（开局加注(2bet)）"], ["翻前", "对手加注到 12（3bet）"], ["翻前", "我方加注到 30（4bet）"]]),
+            H("BTN", [["翻前", "我方跟注到 2"], ["翻前", "对手加注到 6"], ["翻前", "我方弃牌"]]),
+            H("BTN", [["翻前", "我方加注到 4（开局加注(2bet)）"], ["翻前", "对手跟注"], ["翻牌", "对手让牌"], ["翻牌", "我方下注到 3"]], B[:3]),
+            H("BB", [["翻前", "对手开局加注到 4"], ["翻前", "我方跟注到 4"], ["翻牌", "我方让牌"], ["翻牌", "对手下注到 3"], ["翻牌", "我方跟注到 3"],
+                     ["转牌", "我方让牌"], ["转牌", "对手下注到 8"], ["转牌", "我方跟注到 8"], ["河牌", "我方让牌"], ["河牌", "对手让牌"]],
+              B, "摊牌或河牌后结束", -10),
+            H("BTN", [["翻前", "我方加注到 4（开局加注(2bet)）"], ["翻前", "对手跟注"], ["翻牌", "对手让牌"], ["翻牌", "我方下注到 3"],
+                      ["翻牌", "对手加注到 10"], ["翻牌", "我方弃牌"]], B[:3]),
+        ])
+        got = {k: S[k] for k in ("b4", "f3_opp", "f4_opp", "f4_fold", "b3", "vs_limp", "iso", "fcb_opp", "fcb", "rcb",
+                                 "cb_opp", "cb", "cb2_opp", "cb2", "xr_opp", "xr", "wtsd", "wsd")}
+        self.assertEqual(got, dict(b4=1, f3_opp=1, f4_opp=1, f4_fold=1, b3=1, vs_limp=1, iso=1, fcb_opp=2, fcb=1, rcb=1,
+                                   cb_opp=1, cb=1, cb2_opp=1, cb2=1, xr_opp=2, xr=1, wtsd=1, wsd=1))
+        txt = "\n".join(P._stat_lines(S, "x"))
+        for k in ("PFR", "4B1/1", "面对4B弃1/1", "对limp加注1/1", "转牌二次cbet1/1", "check-raise1/2", "摊牌赢1/1"): self.assertIn(k, txt)
 
     def test_population_subtract(self):
         P = self.P
         self.db.add_hands([self.h("villain", i) for i in range(4)] + [self.h("other", i, pos="BTN") for i in range(3)])
-        self.assertEqual(self.db.pop("villain"), P.opp_stats([self.h("other", i, pos="BTN") for i in range(3)]))
+        self.assertEqual(self.db.pop("villain"), P.opp_stats([self.h("other", i, pos="BTN") for i in range(3)]))   # 群体 = SUM − 该对手
         self.assertEqual(self.db.pop()["n"], 7); self.assertEqual(self.db.pop("newbie")["n"], 7)
         self.db.add_hands([self.h("other", 30)])                                              # 合计随写入更新
         self.assertEqual(self.db.pop("villain")["n"], 4); self.assertEqual(self.db.counts(), (2, 8))

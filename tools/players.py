@@ -5,7 +5,7 @@
 这个工具用来查看对手库，以及把 logs/ 里的回放手牌记录（hands__*.jsonl）导入对手库。
 
 用法：
-    python3 tools/players.py list                         # 各对手手数、桌、最近出现、画像文件（按最近出现倒序）
+    python3 tools/players.py list                         # 各对手手数、VPIP/PFR/3B/4B/cbet/AF/WTSD(%)、最近出现、画像（按最近出现倒序）
     python3 tools/players.py show little00                # 该对手跨桌统计 + 简述（就是 prompt 里的画像块）
     python3 tools/players.py import logs/2026-10-30/hands__*.jsonl [--opp little00]   # 导入（去重，只追加）
     python3 tools/players.py rebuild                      # 删库重建（全量从 jsonl 重新累计）
@@ -27,11 +27,15 @@ def db():
 
 def cmd_list(a):
     d = db()
-    rows = d.rows()
+    rows = d.rates()
     if not rows: print("对手库为空"); return
-    for p in rows:
-        print(f"{p['name']:20s} {p['n_hands']:5d} 手  最近 {p.get('last_seen') or '-':19s}  桌 {p.get('tables') or '-'}  "
-              f"画像 {'有' + ('（' + p['ptype'] + '）' if p.get('ptype') else '') if p.get('profile') else '无'}")
+    prof = {r["key"]: r for r in d.rows()}
+    f = lambda v: "-" if v is None else f"{v:g}"
+    print(f"{'对手':18s} {'手数':>5s} {'VPIP':>5s} {'PFR':>5s} {'3B':>5s} {'4B':>5s} {'cbet':>5s} {'AF':>5s} {'WTSD':>5s}  最近出现             画像")
+    for r in rows:
+        p = prof[r["key"]]
+        print(f"{r['name']:18s} {r['hands']:5d} {f(r['vpip']):>5s} {f(r['pfr']):>5s} {f(r['b3']):>5s} {f(r['b4']):>5s} {f(r['cbet_flop']):>5s} "
+              f"{f(r['af']):>5s} {f(r['wtsd']):>5s}  {r['last_seen'] or '-':19s}  {'有' + ('（' + p['ptype'] + '）' if p.get('ptype') else '') if p.get('profile') else '无'}")
 
 
 def cmd_show(a):

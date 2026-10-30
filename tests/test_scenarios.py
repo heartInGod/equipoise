@@ -1037,7 +1037,7 @@ class TestInfra(unittest.TestCase):
         txt = C.TPROMPT.format(state=S.brief_text(st, S.HandHist()))
         self.assertIn('"act"', txt); self.assertIn("2BB=4", txt)
         self.assertLess(len(txt), 800, "精简 prompt 应 <800 字")
-        self.assertIn('"act"', C.TPROMPT_LONG.format(state=S.to_text(st, S.HandHist())))
+        self.assertEqual(set(C.PROMPTS), {"short"}, "long 已删除；session 走 HandSession")
 
     def test_brief_text_facts(self):
         st = mk(hero=("Ts", "8h"), board=("9h", "Ah", "5h"), buttons={"弃牌": FOLD, "跟注": CALL, "加注": RAISE}, presets=POT_PRE,

@@ -1,6 +1,6 @@
 """模型决策评测：用 tools/model_cases.py 里的局面问模型，按“实际会执行的动作”判分，统计各类局面的正确率。
 
-出题和判分都走生产代码：局面 -> prompt（short=TPROMPT+brief_text / long / session=HandSession.build，与 tlive 完全一致）
+出题和判分都走生产代码：局面 -> prompt（short=TPROMPT+brief_text / session=HandSession.build，与 tlive 完全一致）
 -> 模型 -> parse_json -> execute(RecIO，不点手机) -> real_act 归类。
 判定：对 / 尺度偏（动作对、下注档位不在可接受范围）/ 错 / 严重（用例 bad 里的动作，或能免费让牌却弃牌）/ 无效（解析失败/非法 act/超时）。
 
@@ -167,7 +167,7 @@ def summary(res):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--model", default="rule", help="provider/model，或 rule=本地规则基线")
-    ap.add_argument("--prompt", choices=["short", "long", "session"], default="session")
+    ap.add_argument("--prompt", choices=["short", "session"], default="session")
     ap.add_argument("-n", type=int, default=1, help="每个用例问几次（看稳定性）")
     ap.add_argument("-j", type=int, default=2, help="并发请求数（接口有 rpm 限流，429 会退避重试）")
     ap.add_argument("--timeout", type=float, default=30)

@@ -115,7 +115,7 @@ GTO 基线：<无对手信息时怎么打，一句话>
 python3 poker_bot.py list                                   # 列出可用模型
 python3 tools/state.py                                      # 现场截图并打印识别结果（不调模型）
 python3 poker_bot.py tprobe --model <provider/model> --img model_test/state1.raw   # 单帧测试文本模式
-python3 poker_bot.py tlive --model <provider/model> --max-sec 600 [--dry] [--budget 8 --hedge 3.0] [--no-preflop-rule]   # 主模式（翻前默认不问模型、直接本地规则；--no-preflop-rule 让翻前也问模型）
+python3 poker_bot.py tlive --model <provider/model> --max-sec 600 [--dry] [--budget 8 --hedge 3.0] [--no-preflop-rule] [--prompt session|short]   # 主模式（默认 --prompt session + 默认桌；翻前默认不问模型、直接本地规则；--no-preflop-rule 让翻前也问模型）
 python3 poker_bot.py tlive --model <m> --replay model_test/live --t0 001000 --t1 002000 [--rule]   # 离线回放，不连手机（--rule 不调模型）
 tail -f logs/$(date +%F)/ops.log                           # 实时看机器人操作 + 异常（跨零点后换新文件，需重开）
 tail -f logs/$(date +%F)/ops.log | grep -v --line-buffered " INFO  \["   # 只看 WARN/ERROR（traceback 行无级别，会保留）
@@ -126,7 +126,7 @@ python3 tools/players.py list | show <opp> | hands <opp> [--table X] | hand <hid
 ```
 
 - **优先用文本模式 `tlive`**（本地识别 + 模型只做决策）。`probe/live` 是早期直接把图片丢给模型的模式，慢且不稳定。
-- 决策 prompt 在 `bot_core.py` 的 `TPROMPT`（精简版，约 600 字，状态由 `tools/state.py` 的 `brief_text()` 生成）；旧版完整 prompt 是 `TPROMPT_LONG` + `to_text()`，用 `tlive --prompt long` 切换；`tlive --prompt session --table tables/<桌> [--opp <昵称初值,可选>] [--profile-every 10] [--warm/--no-warm]` 用开局长 system + 画像（跨桌热启动，见 §4） + 每次一条本手完整记录（真机模式把每手写进本桌 `tables/<桌>/hands.jsonl`、模型对话写本桌 `msgs.jsonl`（按 hid 关联），每 N 手异步更新本桌画像 `tables/<桌>/<opp>.md`，旧画像备份为 `.md.bak`；回放模式只写 `logs/<日期>/hands__*.jsonl` + `msgs__*.jsonl`，不写库、不改画像），`to_text()` 仍用于人工查看（`tools/state.py`、`act.py look`）。改策略改 `TPROMPT`，改识别改 `state.py`，改流程改 `Bot.handle`；改完跑 `tests/test_scenarios.py`，识别有意改动用 `tests/make_golden.py --check` 看差异再刷新。
+- 决策 prompt 默认 `--prompt session`（评测 99% vs short 95%）；`--prompt short` 是备用单帧 prompt：`bot_core.py` 的 `TPROMPT`（约 600 字，状态由 `tools/state.py` 的 `brief_text()` 生成），用于单帧调试、非 Anthropic 模型兜底、session 出问题时对照（旧 long 模式已删除）；`tlive [--prompt session] --table tables/<桌> [--opp <昵称初值,可选>] [--profile-every 10] [--warm/--no-warm]` 用开局长 system + 画像（跨桌热启动，见 §4） + 每次一条本手完整记录（真机模式把每手写进本桌 `tables/<桌>/hands.jsonl`、模型对话写本桌 `msgs.jsonl`（按 hid 关联），每 N 手异步更新本桌画像 `tables/<桌>/<opp>.md`，旧画像备份为 `.md.bak`；回放模式只写 `logs/<日期>/hands__*.jsonl` + `msgs__*.jsonl`，不写库、不改画像），`to_text()` 仍用于人工查看（`tools/state.py`、`act.py look`）。改策略改 `TPROMPT`，改识别改 `state.py`，改流程改 `Bot.handle`；改完跑 `tests/test_scenarios.py`，识别有意改动用 `tests/make_golden.py --check` 看差异再刷新。
 - 延迟链路：Grabber 后台连续截图 → parse(0.2s) → 模型（长连接；3.0s 未返回发对冲请求（`--hedge`，默认 3.0）；截图后 `--budget` 8s 仍无结果用 `rule_decide`）→ 常驻 adb shell 发点击（不阻塞）。点击后开始于 busy_until+0.25s 之前的帧丢弃。
 - 识别出的画面类型：`my_turn`、`anim`、`runit`（全下后选发一次/两次）、`profile`、`away`、`can_start`、`need_sit`、`waiting`、`other`。
 - 无法处理的界面会存到 `model_test/unknown/` 并写入 `logs/<YYYY-MM-DD>/unknown.jsonl`，优化识别时先看这里。
@@ -164,7 +164,7 @@ python3 tools/players.py list | show <opp> | hands <opp> [--table X] | hand <hid
 - 对手画像热/冷启动：session 模式（`--warm`，真机默认开、回放默认关，避免回放读到自己）启动时打开对手库 `players/opponents.db`（每人一行计数器+画像；平时打开约 3ms、不读 jsonl，新库/升级时从 `tables/*/hands.jsonl` 重建，20 万手约 3.6s），**不做热加载**，识别到对手后按主键查库（1 万对手/20 万手时查找+群体参考约 0.06ms）；每手结束的记录交给 session 的**后台写线程**（主线程只入队，不做文件/数据库 IO）：按顺序追加本桌对话 `msgs.jsonl` → 追加本桌流水 `hands.jsonl` → 把这一手计数 UPSERT 进库（仅真机，约 0.07ms）→ `ProfileUpdater` 回调 → 查好最新画像（本桌 md 优先，其次库里最近一份），下一手开始时直接换上；退出时 `sess.flush()` 等写完（对手始终没识别出的手此时以 opp=null 写进流水）；库打不开时退回扫 jsonl。手牌下方画像显示“累计N手(此前X+本局Y)”；对手累计 <30 手时附“群体参考”（其他对手汇总），全新对手描述为“按群体倾向小幅偏移”。对手昵称**从截图自动识别**（`state.opp_name`：顶部中央 (720,416) 名字行；`name_key` 归一化容忍 0/O、l/1、空格/下划线），最近 8 帧里同一昵称 ≥3 次即确认，后台线程查库取其累计统计（全局，不分桌）+画像（本桌优先）+群体参考（全体−该对手），**下一手开始生效**；对手未识别时结束的手先缓存，识别后补上昵称再写；桌上换人自动切换（本局统计/近况清空）。`--opp` 只是可选初值。
 - 存储按桌组织：真机每手自动写本桌 `hands.jsonl`/`msgs.jsonl`、更新本桌 `<opp>.md`、计数进全局库；`msgs.jsonl` 不滚动清理，长期跑需要留意体积。
 - `tables/20261029_wepoker_practice/`：HU 单挑练习局，对手 `little00`；`hands.jsonl` 有 56 手（2026-10-30 从回放导入，无模型对话引用），本桌画像 `little00.md` 还没生成（真机跑满 `--profile-every` 手后自动生成）。
-- short/long 模式的 `TPROMPT` 是写死的通用单挑策略，不读画像；**session 模式**会读本桌 `tables/<桌>/<opp>.md` 注入 system（本桌没有时用库里该对手最近一份画像作先验；都没有按基线打）。画像自动更新只基于代码记录的行动线与盈亏，看不到对手亮牌（parse 尚未识别摊牌），需要时仍按工作流 C 手动补。
+- short 模式的 `TPROMPT` 是写死的通用单挑策略，不读画像；**session 模式**会读本桌 `tables/<桌>/<opp>.md` 注入 system（本桌没有时用库里该对手最近一份画像作先验；都没有按基线打）。画像自动更新只基于代码记录的行动线与盈亏，看不到对手亮牌（parse 尚未识别摊牌），需要时仍按工作流 C 手动补。
 - `adb_act.sh` 的坐标来自早期截图，部分没验证过；`tools/act.py` 每次按 OCR 定位，更可靠。
 - 2026-10-30 修复（commit 见 `git log`）：灰档预设误点（“我方下注到 ?”）、`rule_decide` 危险牌面（四同花/一张成顺/三同花/大公共对）两对·顶对降级、rule_decide 强弱判断只看成牌行（原来听牌行的“顺子听牌”字样会把纯顺听当成顺子强牌）、组合听牌 outs 去重与精确胜率（004552 Td8d@KdQd9h=12 outs 到河 45%）、hedge 3.8→3.0、`--preflop-rule`（默认开）、live 帧滚动清理。真机 100 手复测尚未做（需用户明确要求再跑）。
 - 文档中的范围和统计参考值按 6max 100BB 现金局给出；单挑、锦标赛、短码要另行调整（单挑基线：BTN 开约 80%，BB 防守 50–60%+）。

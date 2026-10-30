@@ -5,7 +5,7 @@
 - 游戏：NLH 现金局 / MTT / SNG
 - 级别（盲注）：SB / BB / Ante
 - 桌型：6max / 9max
-- 金额单位：BB  （player.log 统一使用此单位）
+- 金额单位：筹码（hands.jsonl 的 ev/delta 按筹码记录，acts/start_bb 换算成 BB）
 - Hero 昵称 / 座位：
 - 开始时间 / 结束时间：
 - 本桌结果：

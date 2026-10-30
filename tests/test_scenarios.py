@@ -602,15 +602,16 @@ class TestSession(unittest.TestCase):
     def test_warm_start_from_other_table(self):
         """热启动：对手在别的桌的历史手并入统计；冷启动：新对手给群体参考；同一手多次记录只算一次"""
         P = self.P
-        root = Path(self.tmp); tables, players = root / "tables", root / "players"
-        hands = root / "hands"; hands.mkdir(parents=True)
+        root = Path(self.tmp); tables = root / "tables"
+        (tables / "t1").mkdir(parents=True); (tables / "t2").mkdir()
         h_open = {"t": "2026-10-29 10:00:00", "opp": "villain", "pos": "BB", "hero": ["7c", "2d"], "board": [],
                   "ev": [["翻前", "对手开局加注到 4"], ["翻前", "我方弃牌"]], "how": "我方弃牌", "delta": -2}
         rows = [dict(h_open, hero=[f"{r}c", "2d"]) for r in "3456789"] + [dict(h_open, hero=["3c", "2d"], t="x")]   # 最后一条与第一条重复
         rows.append(dict(h_open, opp="other"))
-        (hands / "2026-10.jsonl").write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
-        hist = P.load_hands("villain", hands=hands)
-        pop = P.load_hands(exclude="villain", hands=hands)
+        (tables / "t1" / "hands.jsonl").write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows[:4]))
+        (tables / "t2" / "hands.jsonl").write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows[4:]))   # 跨两张桌
+        hist = P.load_hands("villain", tables=tables)
+        pop = P.load_hands(exclude="villain", tables=tables)
         self.assertEqual(len(hist), 7); self.assertEqual(len(pop), 1)
         sess = P.HandSession(None, "villain", history=hist, population=pop)
         req, u = sess.build(self.pre(), S.HandHist())
@@ -622,27 +623,50 @@ class TestSession(unittest.TestCase):
         self.assertIn("新对手无样本，先按群体倾向", u2); self.assertIn("群体参考（其他对手共7手", u2)
         self.assertNotIn("群体参考", P.HandSession(None, "x", history=hist * 5).build(self.pre(), S.HandHist())[1])  # ≥30 手不再附
 
-    def test_profile_path_prefers_newer(self):
+    def test_profile_per_table(self):
+        """画像按桌：只找本桌 <opp>.md（name_key 匹配）；本桌没有时 find_profile 回退到对手库里最近一份（标注来自其他桌）"""
         P = self.P
-        root = Path(self.tmp); players, tdir = root / "players", root / "t1"
-        players.mkdir(); tdir.mkdir()
-        g, t = players / "vil_lain.md", tdir / "vil lain.md"
-        g.write_text("# g"); t.write_text("# t"); os.utime(g, (1, 1))
-        self.assertEqual(P.profile_path(tdir, "vil lain", players), t)
-        os.utime(g, (2e9, 2e9)); self.assertEqual(P.profile_path(tdir, "vil lain", players), g)
-        self.assertEqual(P.profile_path(root / "nope", "vil lain", players), g)    # 换桌后仍能找到全局画像
-        self.assertIsNone(P.profile_path(tdir, "nobody", players))
+        root = Path(self.tmp); t1, t2 = root / "t1", root / "t2"
+        t1.mkdir(); t2.mkdir()
+        (t1 / "vil lain.md").write_text("# t1\n- 类型：松凶\n本桌画像\n"); (t2 / "vil_lain.md").write_text("# t2")
+        self.assertEqual(P.profile_path(t1, "vil lain"), t1 / "vil lain.md")
+        self.assertEqual(P.profile_path(t2, "vil lain"), t2 / "vil_lain.md")          # 同一人不同桌各一份
+        self.assertIsNone(P.profile_path(root / "nope", "vil lain")); self.assertIsNone(P.profile_path(t1, "nobody"))
+        row = {"profile": "库里的画像", "ptype": "跟注站"}
+        f = P.find_profile(t1, "vil lain", row); self.assertEqual((f["src"], f["ptype"]), ("本桌", "松凶")); self.assertIn("本桌画像", f["profile"])
+        f = P.find_profile(root / "t3", "vil lain", row)
+        self.assertEqual((f["src"], f["ptype"]), ("他桌", "跟注站")); self.assertIn("其他桌", f["profile"]); self.assertIn("库里的画像", f["profile"])
+        self.assertIsNone(P.find_profile(root / "t3", "vil lain"))
+
+    def test_profile_updater_writes_table(self):
+        """ProfileUpdater 写本桌 <opp>.md；旧画像优先本桌，本桌没有时用库里最近一份（他桌）作先验；写完同步进库"""
+        import oppdb
+        P = self.P
+        root = Path(self.tmp); tdir = root / "tables" / "t1"; tdir.mkdir(parents=True)
+        db = oppdb.OppDB(root / "o.db")
+        other = root / "tables" / "t0" / "little00.md"; other.parent.mkdir(); other.write_text("# 他桌画像\n- 类型：紧弱\n"); db.sync_profiles([other])
+        prompts = []
+        def model(prompt, **kw): prompts.append(prompt); return "# 新画像\n- 类型：松凶\n"
+        u = P.ProfileUpdater(model, tdir, None, every=1, store=db)
+        u._run([{"n": 1}], "little00")
+        self.assertIn("来自其他桌", prompts[0]); self.assertIn("他桌画像", prompts[0])
+        self.assertEqual((tdir / "little00.md").read_text(), "# 新画像\n- 类型：松凶\n")
+        self.assertEqual(db.lookup("little00")["ptype"], "松凶")                         # 库里换成最新一份
+        u._run([{"n": 2}], "little00")
+        self.assertIn("# 新画像", prompts[1].split("### 旧画像")[1]); self.assertTrue((tdir / "little00.md.bak").exists())
+        self.assertEqual(other.read_text(), "# 他桌画像\n- 类型：紧弱\n")               # 他桌画像不动
+        db.close()
 
     def test_detect_opp_async_and_switch(self):
         """不靠 --opp：截图读到昵称（多帧投票、容忍 0/O）→ 后台加载跨桌历史 → 下一手生效；之前的手补上昵称再写；换人重置本局统计"""
         P = self.P
-        root = Path(self.tmp); tables, players = root / "tables", root / "players"
-        hands = root / "hands"; hands.mkdir(parents=True)
+        root = Path(self.tmp); tables = root / "tables"
+        (tables / "t0").mkdir(parents=True)
         h = {"t": "2026-10-29 10:00:00", "opp": "little00", "pos": "BB", "hero": ["7c", "2d"], "board": [],
              "ev": [["翻前", "对手开局加注到 4"], ["翻前", "我方弃牌"]], "how": "我方弃牌", "delta": -2}
-        (hands / "2026-10.jsonl").write_text("".join(json.dumps(dict(h, hero=[f"{r}c", "2d"]), ensure_ascii=False) + "\n" for r in "3456789"))
-        old = P.TABLES, P.PLAYERS, P.HANDS
-        P.TABLES, P.PLAYERS, P.HANDS = tables, players, hands
+        (tables / "t0" / "hands.jsonl").write_text("".join(json.dumps(dict(h, hero=[f"{r}c", "2d"]), ensure_ascii=False) + "\n" for r in "3456789"))
+        old = P.TABLES
+        P.TABLES = tables
         try:
             logs = []
             sess = P.HandSession(None, None, hands_log=self.log, warm=True, log=logs.append)
@@ -668,7 +692,7 @@ class TestSession(unittest.TestCase):
             self.assertEqual(sess.opp, "NewGuy"); self.assertEqual(sess.n_hist, 0); self.assertEqual(sess.hands, [])
             self.assertIn("当前对手：NewGuy", sess.static)
         finally:
-            P.TABLES, P.PLAYERS, P.HANDS = old
+            P.TABLES = old
 
     def test_unknown_opp_hands_written_on_flush(self):
         """对手一直没识别出来：退出 flush 时这些手照样写进流水（opp=null），不计入对手库"""
@@ -809,10 +833,16 @@ class TestOppDB(unittest.TestCase):
         self.assertIsNone(self.O.OppDB(self.tmp / "empty.db").pop("x"))
 
     def test_profiles(self):
-        players = self.tmp / "players"; players.mkdir()
-        g = players / "little00.md"; g.write_text("# 画像\n- 类型：松凶\n正文\n\n## 7. 更新日志\n- 旧\n")
-        files = self.P._profile_files(self.tmp / "tables", players)
-        self.assertEqual(self.db.sync_profiles(files), 1); self.assertEqual(self.db.sync_profiles(files), 0)   # 未修改不重读
+        tables = self.tmp / "tables"
+        for d in ("t1", "t2", "_template"): (tables / d).mkdir(parents=True)
+        (tables / "t1" / "little00.md").write_text("# 旧桌\n- 类型：紧弱\n")
+        g = tables / "t2" / "little00.md"; g.write_text("# 画像\n- 类型：松凶\n正文\n\n## 7. 更新日志\n- 旧\n")
+        os.utime(tables / "t1" / "little00.md", (1, 1))
+        for f in ("table.md", "_x.md"): (tables / "t2" / f).write_text("# x")
+        (tables / "_template" / "y.md").write_text("# y")
+        files = self.P._profile_files(tables)
+        self.assertEqual(sorted(str(f.relative_to(tables)) for f in files), ["t1/little00.md", "t2/little00.md"])   # 不含 table.md/_ 开头/模板
+        self.assertEqual(self.db.sync_profiles(files), 1); self.assertEqual(self.db.sync_profiles(files), 0)   # 同一人取最新一桌；未修改不重读
         d = self.db.lookup("little0O")
         self.assertEqual(d["ptype"], "松凶"); self.assertIn("正文", d["profile"]); self.assertNotIn("更新日志", d["profile"])
         self.assertEqual(d["n_hands"], 0)
@@ -821,9 +851,10 @@ class TestOppDB(unittest.TestCase):
         """有库时：识别昵称 → 从内存取累计统计/画像/群体参考 → 下一手生效；真机每手追加 jsonl 后累计进库"""
         P = self.P
         self.db.add_hands([self.h("little00", i) for i in range(5)] + [self.h("other", i) for i in range(6)])
-        g = self.tmp / "little00.md"; g.write_text("# 画像\n- 类型：跟注站\n库里的画像\n"); self.db.sync_profiles([g])
-        hd, ml = self.tmp / "hands", self.tmp / "logs" / "msgs.jsonl"
-        sess = P.HandSession(None, None, warm=True, store=self.db, store_write=True, hands_dir=hd, msgs_log=ml, log=lambda m: None)
+        g = self.tmp / "tables" / "t0" / "little00.md"; g.parent.mkdir(parents=True); g.write_text("# 画像\n- 类型：跟注站\n库里的画像\n"); self.db.sync_profiles([g])
+        tdir = self.tmp / "tables" / "t1"; tdir.mkdir()
+        hl, ml = tdir / "hands.jsonl", tdir / "msgs.jsonl"
+        sess = P.HandSession(tdir, None, warm=True, store=self.db, store_write=True, hands_log=hl, msgs_log=ml, log=lambda m: None)
         self.assertEqual(sess.pop["n"], 11)                                      # 未识别前用全体做群体参考
         _, u = sess.build(self.pre(), S.HandHist())
         self.assertIn("群体参考（其他对手共11手", u)
@@ -834,15 +865,27 @@ class TestOppDB(unittest.TestCase):
         self.assertEqual(sess.opp, "little00"); self.assertEqual(sess.n_hist, 5); self.assertEqual(sess.pop["n"], 6)
         self.assertIn("累计6手(此前5+本局1)", u); self.assertIn("群体参考（其他对手共6手", u)
         self.assertIn("简述：跟注站", u); self.assertIn("库里的画像", req["system"][1]["text"])
+        self.assertIn("其他桌", req["system"][1]["text"])                         # 本桌还没画像：用他桌最近一份作先验
         sess.flush()
         self.assertEqual(self.db.lookup("little00")["n_hands"], 6)               # 识别前结束的那手补上昵称，计数直接加进库
-        fs = list(hd.glob("*.jsonl")); self.assertEqual(len(fs), 1); self.assertRegex(fs[0].name, r"^\d{4}-\d{2}\.jsonl$")   # 按月的流水
-        det = [json.loads(l) for l in fs[0].read_text().splitlines()]
-        self.assertEqual(len(det), 1); self.assertIn("acts", det[0]); self.assertEqual(det[0]["opp"], "little00")
+        det = [json.loads(l) for l in hl.read_text().splitlines()]                 # 本桌流水
+        self.assertEqual(len(det), 1); self.assertIn("acts", det[0]); self.assertEqual(det[0]["opp"], "little00"); self.assertEqual(det[0]["table"], "t1")
         self.assertRegex(det[0]["hid"], r"^\d{8}-\d{6}-[0-9a-f]{4}-0001$")
         m = [json.loads(l) for l in ml.read_text().splitlines()]                    # 对话单独存，按 hid 双向关联
         self.assertEqual((len(m), m[0]["hid"]), (1, det[0]["hid"])); self.assertTrue(m[0]["msgs"])
         self.assertEqual(Path(det[0]["msgs"]).resolve() if Path(det[0]["msgs"]).is_absolute() else P.ROOT / det[0]["msgs"], ml.resolve())
+        (tdir / "little00.md").write_text("# 本桌\n- 类型：松凶\n本桌新画像\n")      # 本桌有了画像（ProfileUpdater 写的）→ 下一手换上
+        sess.build(self.pre(hero=("9c", "9d"), stack=199), S.HandHist()); sess.flush()
+        req, u = sess.build(self.pre(hero=("8c", "8d"), stack=199), S.HandHist())
+        self.assertIn("本桌新画像", req["system"][1]["text"]); self.assertNotIn("其他桌", req["system"][1]["text"]); self.assertIn("简述：松凶", u)
+
+    def test_initial_opp_warm(self):
+        """--opp 初值 + 热启动：后台查到的就是同一人时也要并入跨桌统计和画像"""
+        self.db.add_hands([self.h("little00", i) for i in range(5)])
+        sess = self.P.HandSession(None, "little00", warm=True, store=self.db, log=lambda m: None)
+        sess._thread.join()
+        _, u = sess.build(self.pre(), S.HandHist())
+        self.assertEqual(sess.n_hist, 5); self.assertIn("此前5+本局0", u)
 
     def pre(self, hero=("Ah", "Kd"), stack=199):
         return mk(hero=hero, buttons={"弃牌": FOLD, "跟注": CHECK, "加注": RAISE},

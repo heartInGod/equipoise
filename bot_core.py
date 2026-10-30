@@ -645,20 +645,22 @@ class Bot:
 
 # ======================= 运行 =======================
 def make_session(a, model=None, live=False):
-    """--prompt session 时构造 HandSession。真机：每手写对局流水 hands/YYYY-MM.jsonl + 模型对话 logs/<日期>/msgs.jsonl（hid 关联），
-    计数直接加进对手库，并按 --profile-every 异步更新画像；回放：流水/对话写 logs/<日期>/hands__*.jsonl、msgs__*.jsonl，不写库"""
+    """--prompt session 时构造 HandSession。真机：每手写本桌 tables/<桌>/hands.jsonl（对局流水）+ msgs.jsonl（模型对话，hid 关联），
+    计数直接加进全局对手库 players/opponents.db，并按 --profile-every 异步更新本桌画像 tables/<桌>/<opp>.md；
+    回放：流水/对话写 logs/<日期>/hands__*.jsonl、msgs__*.jsonl，不写库、不写桌目录"""
     if getattr(a, "prompt", None) != "session": return None
-    from session_prompt import HandSession, ProfileUpdater, HANDS
-    tdir = ROOT / a.table if getattr(a, "table", None) else None
+    from session_prompt import HandSession, ProfileUpdater, TABLES
+    tdir = ROOT / a.table if getattr(a, "table", None) else (TABLES / time.strftime("%Y%m%d_auto") if live else None)
+    if live: new_table(tdir)
     opp = getattr(a, "opp", None)
     ts = time.strftime('%m%d_%H%M')
-    hl = None if live else logroll.path(f"hands__{ts}.jsonl")
-    ml = logroll.DailyPath("msgs.jsonl") if live else logroll.path(f"msgs__{ts}.jsonl")
+    hl = tdir / "hands.jsonl" if live else logroll.path(f"hands__{ts}.jsonl")
+    ml = tdir / "msgs.jsonl" if live else logroll.path(f"msgs__{ts}.jsonl")
     warm = getattr(a, "warm", None)
     warm = live if warm is None else warm          # 真机默认热启动；回放默认不载入（历史里可能就有被回放的手）
-    # 对手昵称从截图识别（Bot.handle -> sess.see_opp），识别到/换人后查库取其跨桌统计+画像，下一手生效；--opp 只是可选初值
+    # 对手昵称从截图识别（Bot.handle -> sess.see_opp），识别到/换人后查库取其跨桌统计 + 画像（本桌优先），下一手生效；--opp 只是可选初值
     store = None
-    if warm:                                       # 对手库：每人一行计数+画像（新库时从 jsonl 重建），识别到对手后按主键查库
+    if warm:                                       # 对手库：每人一行计数+最近画像（新库时从各桌 hands.jsonl 重建），识别到对手后按主键查库
         try:
             import oppdb
             from session_prompt import _hand_files, _profile_files
@@ -667,10 +669,21 @@ def make_session(a, model=None, live=False):
             print(f"[oppdb] 对手 {np_} 人 / 累计 {nh} 手" + (f"（新库，从 jsonl 重建 {store.synced} 手）" if store.synced else "") + f"，打开 {store.sync_ms:.0f}ms，识别到对手后按需查库", flush=True)
         except Exception as e:
             print(f"[oppdb] 打开失败，退回扫 jsonl: {type(e).__name__}: {e}", flush=True)
-    upd = ProfileUpdater(model, tdir, opp, every=a.profile_every, store=store) if live and model and tdir and a.profile_every > 0 else None
-    return HandSession(tdir, opp, hands_log=hl, hands_dir=HANDS if live else None, msgs_log=ml, on_hand_end=upd, warm=warm,
+    upd = ProfileUpdater(model, tdir, opp, every=a.profile_every, store=store) if live and model and a.profile_every > 0 else None
+    return HandSession(tdir, opp, hands_log=hl, msgs_log=ml, on_hand_end=upd, warm=warm,
                        store=store, store_write=live,
                        log=lambda m: print(m, flush=True))
+
+
+def new_table(tdir):
+    """桌目录不存在时建一个：从 tables/_template/table.md 复制桌信息（之后手工补平台/级别等）"""
+    tdir = Path(tdir)
+    if (tdir / "table.md").exists(): return tdir
+    tdir.mkdir(parents=True, exist_ok=True)
+    tpl = tdir.parent / "_template" / "table.md"
+    if tpl.exists():
+        (tdir / "table.md").write_text(tpl.read_text().replace("<table_id>", tdir.name).replace("- 日期：", f"- 日期：{time.strftime('%Y-%m-%d')}", 1))
+    return tdir
 
 
 def run_live(a):

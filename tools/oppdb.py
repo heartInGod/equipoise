@@ -7,8 +7,8 @@
   idx_players_last(last_seen) —— 按最近出现排序列对手
 每手结束（session 后台写线程）：add_hands([rec]) 把这一手算出的计数直接加到该对手那一行
 （INSERT … ON CONFLICT DO UPDATE SET n=n+1, vp=vp+…），不读 jsonl、不扫全表。
-对局明细不进库：对局流水 hands/YYYY-MM.jsonl（只追加，每手一行：hid + 行动线 + 逐个动作的位置/类型/注码，见 session_prompt.hand_detail；
-模型对话在 logs/<日期>/msgs.jsonl，按 hid 关联）。
+对局明细不进库：各桌对局流水 tables/<桌>/hands.jsonl（只追加，每手一行：hid + 行动线 + 逐个动作的位置/类型/注码，见 session_prompt.hand_detail；
+模型对话在 tables/<桌>/msgs.jsonl，按 hid 关联）。
 jsonl 只在重建时读：表结构改了就升 VERSION，打开旧库（或库文件丢了）时清空，open_db 再从 jsonl 全量重算。
 群体参考 = SUM(全体) − 该对手（计数可加减；合计第一次查询时 SUM 一次，之后随写入增量维护）。
 """
@@ -152,7 +152,7 @@ PRAGMA user_version = {VERSION};""")
         return n
 
     def sync_profiles(self, files):
-        """画像 md（players/<opp>.md、tables/<桌>/<opp>.md）→ 行里的 profile/ptype；同一对手取最新修改的文件，未变化不重读"""
+        """各桌画像 tables/<桌>/<opp>.md → 行里的 profile/ptype（该对手最近一份画像，供没有本桌画像时作先验）；同一对手取最新修改的文件，未变化不重读"""
         P, best = _P(), {}
         for f in map(Path, files):
             if f.name in ("table.md", "README.md") or f.name.startswith("_") or not f.exists(): continue

@@ -10,5 +10,6 @@ pluribus-poker-AI/
 tools/ocr
 # 画像自动更新的备份
 tables/**/*.md.bak
-players/**/*.md.bak
+# 每桌模型对话（体积大，按 hid 与 hands.jsonl 关联）
+tables/*/msgs.jsonl
 players/*.db*

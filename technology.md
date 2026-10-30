@@ -207,7 +207,7 @@
 
 ### 6.3 偏移的执行流程
 
-1. **识别**：读取该对手画像 `tables/<table_id>/<user>.md`（统计 + `player.log` 中的具体牌局）。
+1. **识别**：读取该对手本桌画像 `tables/<table_id>/<user>.md` + 跨桌统计（`tools/players.py show <user>`），具体牌局见本桌 `hands.jsonl`（`players.py hands <user> --table <table_id>`）。
 2. **定位**：找到偏离 GTO 基线最大的节点（见 `gto.md` §8 的节点清单）。
 3. **偏移方向**：
    - 对手**弃牌过多** → 我方多诈唬、多施压。
@@ -236,7 +236,7 @@
 ## 8. 对手画像模板
 
 > 下面是简版。实际游戏使用 `tables/_template/_user_template.md`（完整版，带统计计数器），
-> 每位玩家存为 `tables/<table_id>/<user>.md`，原始手牌记录在 `tables/<table_id>/player.log`。格式见 `tables/README.md`。
+> 每位玩家在每张桌各一份画像 `tables/<table_id>/<user>.md`（同一人不同桌可不同），原始手牌在 `tables/<table_id>/hands.jsonl`，跨桌累计计数在 `players/opponents.db`。格式见 `tables/README.md`。
 
 ```markdown
 ### 玩家：<昵称> / 座位：<Seat>

@@ -1,17 +1,19 @@
-"""跨桌对手库：players/opponents.db（SQLite，tools/oppdb.py）+ players/<opp>.md（全局画像，ProfileUpdater 自动维护）。
+"""对手数据：全局对手库 players/opponents.db（SQLite，tools/oppdb.py）+ 每桌目录 tables/<桌>/。
 
-库里每个对手一行：各项统计的计数器（手数、入池、收池、3B 机会/次数…）+ 画像摘要；每手结束直接把计数加进库，不读 jsonl。
-对局明细不进库，在对局流水 hands/YYYY-MM.jsonl（所有桌/对手一份，只追加：真机每手 + 本工具从回放日志导入；
-每手一行，hid 唯一，含逐个动作的位置/注码），只在 rebuild（或库结构升级）时全量读一遍重算。
-模型对话在 logs/<日期>/msgs.jsonl（按 hid 关联；流水里 msgs 字段记文件路径），随 logs 滚动清理。
+- 对手库：每个对手一行，各项统计的计数器（手数、入池、收池、3B 机会/次数…）+ 最近一份画像摘要（取各桌 <opp>.md 里最新修改的）；
+  每手结束直接把计数加进库，不读 jsonl。
+- 桌目录 tables/<桌>/：table.md（桌信息）、hands.jsonl（本桌对局流水，只追加，每手一行，hid 唯一，含逐个动作的位置/注码）、
+  msgs.jsonl（本桌模型对话，按 hid 关联；流水里 msgs 字段记文件路径）、<opp>.md（该对手在本桌的画像，ProfileUpdater 自动维护）。
+  对局明细不进库，只在 rebuild（或库结构升级）时全量读一遍各桌 hands.jsonl 重算。
 
 用法：
     python3 tools/players.py list                         # 各对手手数、收池/VPIP/PFR/3B/4B/cbet/AF/WTSD(%)、最近出现、画像（按最近出现倒序）
-    python3 tools/players.py show little00                # 该对手跨桌统计 + 简述（就是 prompt 里的画像块）+ 画像
-    python3 tools/players.py hands little00 [-n 20]       # 该对手最近几手（hid、位置、牌、盈亏、行动线）
+    python3 tools/players.py show little00                # 该对手跨桌统计 + 简述（就是 prompt 里的画像块）+ 最近一份画像
+    python3 tools/players.py hands little00 [-n 20] [--table <桌>]   # 该对手最近几手（hid、桌、位置、牌、盈亏、行动线）
     python3 tools/players.py hand <hid>                   # 一手的逐动作明细 + 当时的模型对话（按 hid 关联）
-    python3 tools/players.py import logs/2026-10-30/hands__*.jsonl [--opp little00]   # 回放手导入流水（去重，只追加）
-    python3 tools/players.py rebuild                      # 计数清零，从 hands/*.jsonl 全量重算（画像保留）
+    python3 tools/players.py import logs/2026-10-30/hands__*.jsonl --table 20261029_wepoker_practice [--opp little00]
+                                                          # 回放手导入该桌流水（全局去重，只追加）
+    python3 tools/players.py rebuild                      # 计数清零，从 tables/*/hands.jsonl 全量重算（画像保留）
 """
 import argparse, json, sys
 from pathlib import Path
@@ -59,20 +61,21 @@ def cmd_rebuild(a):
     print(f"[oppdb] 重建：{n} 手 -> 对手 {d.counts()[0]} 人，{(__import__('time').time() - t0) * 1000:.0f}ms")
 
 
-def iter_hands():
+def iter_hands(table=None):
     for f in P._hand_files():
+        if table and f.parent.name != table: continue
         for l in f.read_text(encoding="utf-8").splitlines():
             try: yield json.loads(l)
             except ValueError: pass
 
 
 def cmd_hands(a):
-    hs = [h for h in iter_hands() if P.same_opp(h.get("opp"), a.opp)][-a.n:]
+    hs = sorted((h for h in iter_hands(a.table) if P.same_opp(h.get("opp"), a.opp)), key=lambda h: h.get("t") or "")[-a.n:]
     if not hs: print(f"流水里没有 {a.opp} 的手"); return
     for h in hs:
         d = h.get("delta")
         line = " ".join(f"{x['pos']}{x['act']}" + (f" {x['add']:g}" if x["add"] else "") for x in h.get("acts") or [])
-        print(f"{h.get('hid') or '-':28s} {h.get('t') or '-':19s} 我方{h.get('pos') or '?':3s} {' '.join(h.get('hero') or []):6s} "
+        print(f"{h.get('hid') or '-':28s} {h.get('t') or '-':19s} {h.get('table') or '-':26s} 我方{h.get('pos') or '?':3s} {' '.join(h.get('hero') or []):6s} "
               f"[{' '.join(h.get('board') or [])}]  {'?' if d is None else f'{d / 2:+g}'}BB  {line}")
 
 
@@ -113,16 +116,15 @@ def cmd_import(a):
             k = P.hand_key(h)
             if k in seen: skip += 1; continue
             seen.add(k)
-            h = P.hand_detail(dict(h, opp=opp, src=h.get("src") or Path(f).name,
+            h = P.hand_detail(dict(h, opp=opp, table=a.table, src=h.get("src") or Path(f).name,
                                    hid=h.get("hid") or f"imp-{Path(f).stem}-{i + 1:04d}"), msgs=h.get("msgs") if isinstance(h.get("msgs"), str) else None)
             new.append(h)
-    by_month = {}
-    for h in new: by_month.setdefault((h.get("t") or __import__("time").strftime("%Y-%m"))[:7], []).append(h)
-    for mon, hs in by_month.items():
-        out = P.HANDS / f"{mon}.jsonl"; out.parent.mkdir(parents=True, exist_ok=True)
+    if new:
+        import bot_core
+        out = bot_core.new_table(P.TABLES / a.table) / "hands.jsonl"
         with open(out, "a", encoding="utf-8") as fo:
-            for h in hs: fo.write(json.dumps(h, ensure_ascii=False) + "\n")
-        print(f"新增 {len(hs)} 手 -> {out.relative_to(ROOT)}")
+            for h in new: fo.write(json.dumps(h, ensure_ascii=False) + "\n")
+        print(f"新增 {len(new)} 手 -> {out.relative_to(ROOT)}")
     print(f"跳过（重复/无行动线/无对手）{skip} 条")
     d = db()
     if not d.synced: d.add_hands(new)      # 新导入的手直接加计数（新库已在打开时重建过）
@@ -132,9 +134,10 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     sp = ap.add_subparsers(dest="cmd", required=True)
     sp.add_parser("list"); sp.add_parser("rebuild")
-    s = sp.add_parser("hands"); s.add_argument("opp"); s.add_argument("-n", type=int, default=20)
+    s = sp.add_parser("hands"); s.add_argument("opp"); s.add_argument("-n", type=int, default=20); s.add_argument("--table", help="只看这张桌")
     s = sp.add_parser("hand"); s.add_argument("hid")
     s = sp.add_parser("show"); s.add_argument("opp")
-    s = sp.add_parser("import"); s.add_argument("files", nargs="+"); s.add_argument("--opp", help="覆盖记录里的对手昵称")
+    s = sp.add_parser("import"); s.add_argument("files", nargs="+"); s.add_argument("--table", required=True, help="导入到哪张桌（tables/<桌>/hands.jsonl，不存在就从模板建）")
+    s.add_argument("--opp", help="覆盖记录里的对手昵称")
     a = ap.parse_args()
     {"list": cmd_list, "show": cmd_show, "hands": cmd_hands, "hand": cmd_hand, "import": cmd_import, "rebuild": cmd_rebuild}[a.cmd](a)

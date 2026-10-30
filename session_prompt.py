@@ -3,12 +3,12 @@
 请求格式（交给 AnthropicKA / generic_model）：
     {"system": [静态块(cache_control), 动态块], "messages": [user, assistant, ..., user]}
 - 静态块：整局不变，走 prompt caching（实测 5k token 命中缓存后耗时与短 prompt 相同）。
-- 动态块：每手开始时刷新一次（对手画像 <opp>.md + 最近几手结果摘要），手内不变。
+- 动态块：每手开始时刷新一次（对手画像：本桌 tables/<桌>/<opp>.md 优先，其次对手库里最近一份 + 最近几手结果摘要），手内不变。
 - messages：只有一条 user。每次决策发本手完整记录（手牌编号、当前手牌、未弃牌对手画像、逐个动作：位置[用户名] 动作，剩余 BB）
   + 当前局面快照；不带之前的模型回复（我方动作已在行动线里），每次都以代码记录和当前帧为准。
-- 手结束（检测到新手牌）时生成结果摘要（行动线、盈亏、结束方式）。后台线程把这一手写进对局流水 hands/YYYY-MM.jsonl
-  （所有桌/对手一份，每手一行，含逐动作明细，hid 唯一），模型对话另写 logs/<日期>/msgs.jsonl（同一个 hid，流水里 msgs 字段指向该文件），
-  并可触发 ProfileUpdater 异步更新画像（不在决策路径上，不受倒计时约束）。
+- 手结束（检测到新手牌）时生成结果摘要（行动线、盈亏、结束方式）。后台线程把这一手写进本桌对局流水 tables/<桌>/hands.jsonl
+  （每手一行，含逐动作明细，hid 唯一），模型对话另写本桌 tables/<桌>/msgs.jsonl（同一个 hid，流水里 msgs 字段指向该文件），
+  计数 UPSERT 进全局对手库 players/opponents.db，并可触发 ProfileUpdater 异步更新本桌画像（不在决策路径上，不受倒计时约束）。
 """
 import json, os, queue, re, secrets, threading, time
 from pathlib import Path
@@ -96,9 +96,8 @@ def _table_brief(table_dir):
 
 
 ROOT = Path(__file__).resolve().parent
-PLAYERS = ROOT / "players"          # 跨桌对手库：players/<opp>.md 全局画像，players/opponents.db 计数器
-HANDS = ROOT / "hands"              # 对局流水：hands/YYYY-MM.jsonl，所有真机手 + 导入的回放手（对手库重建的唯一来源）
-TABLES = ROOT / "tables"
+TABLES = ROOT / "tables"            # 每桌一个目录 tables/<桌>/：table.md、hands.jsonl（对局流水）、msgs.jsonl（模型对话）、<opp>.md（本桌画像）
+PLAYERS = ROOT / "players"          # 全局对手库 players/opponents.db（所有对手的累计计数 + 最近一份画像）
 HIST_LIMIT = 1000                   # 热启动最多载入最近多少手
 COLD_N = 30                         # 对手累计少于这么多手时附“群体参考”
 
@@ -120,18 +119,18 @@ def display_name(raw, known=()):
     return re.sub(r"(?<=\d)[Oo]|[Oo](?=\d)", "0", raw.strip())
 
 
-def known_names(tables=None, players=None):
-    """对手库里出现过的昵称（画像文件名 + 手牌记录里的 opp）"""
-    names = {p.stem for p in Path(players or PLAYERS).glob("*.md")}
-    names |= {h.get("opp") for h in load_hands(limit=0) if h.get("opp")}
+def known_names(tables=None):
+    """出现过的昵称（各桌画像文件名 + 各桌流水里的 opp）；无对手库时兜底用"""
+    names = {p.stem for p in _profile_files(tables)}
+    names |= {h.get("opp") for h in load_hands(limit=0, tables=tables) if h.get("opp")}
     return sorted(names)
 
 
-def profile_path(table_dir, opp, players=None):
-    """对手画像文件：全局 players/<opp>.md 与桌内 <table>/<opp>.md（文件名按 name_key 匹配）取较新的一份；都没有返回 None"""
-    if not opp: return None
-    dirs = [Path(players or PLAYERS)] + ([Path(table_dir)] if table_dir and Path(table_dir).is_dir() else [])
-    c = [p for d in dirs if d.is_dir() for p in d.glob("*.md") if not p.name.endswith(".md.bak") and same_opp(p.stem, opp)]
+def profile_path(table_dir, opp):
+    """本桌画像 tables/<桌>/<opp>.md（文件名按 name_key 匹配，容忍 OCR 误差）；没有返回 None。
+    同一个人在不同桌的画像各自独立；本桌没有时由调用方回退到对手库里最近一份画像"""
+    if not opp or not table_dir or not Path(table_dir).is_dir(): return None
+    c = [p for p in _profile_files_in(Path(table_dir)) if same_opp(p.stem, opp)]
     return max(c, key=lambda p: p.stat().st_mtime) if c else None
 
 
@@ -140,9 +139,9 @@ def hand_key(h):
     return json.dumps([h.get("pos"), h.get("hero"), h.get("board"), h.get("ev")], ensure_ascii=False)
 
 
-def _hand_files(hands=None):
-    """对局流水 hands/*.jsonl（真机每手 + 导入的回放手），只用于重建对手库 / 无库时兜底 / 按 hid 查手"""
-    return sorted(Path(hands or HANDS).glob("*.jsonl"))
+def _hand_files(tables=None):
+    """各桌对局流水 tables/*/hands.jsonl（真机每手 + 导入的回放手），只用于重建对手库 / 无库时兜底 / 按 hid 查手"""
+    return sorted(Path(tables or TABLES).glob("*/hands.jsonl"))
 
 
 def rel(p):
@@ -152,17 +151,21 @@ def rel(p):
     except ValueError: return str(p)
 
 
-def _profile_files(tables=None, players=None):
-    """画像 md：players/<opp>.md + 桌内 <opp>.md（排除 table.md / README / _ 开头）"""
-    fs = sorted(Path(players or PLAYERS).glob("*.md")) + sorted(Path(tables or TABLES).glob("*/*.md"))
-    return [f for f in fs if f.name not in ("table.md", "README.md") and not f.name.startswith("_")]
+def _profile_files_in(d):
+    return [f for f in sorted(Path(d).glob("*.md")) if f.name not in ("table.md", "README.md") and not f.name.startswith("_")]
 
 
-def load_hands(opp=None, exclude=None, hands=None, limit=HIST_LIMIT):
-    """跨桌读对局流水（hands/*.jsonl），去重后按时间升序取最近 limit 手。
+def _profile_files(tables=None):
+    """各桌画像 tables/<桌>/<opp>.md（排除 table.md / README / _ 开头；_template 等 _ 开头的目录也排除）"""
+    return [f for d in sorted(Path(tables or TABLES).iterdir()) if d.is_dir() and not d.name.startswith("_")
+            for f in _profile_files_in(d)] if Path(tables or TABLES).is_dir() else []
+
+
+def load_hands(opp=None, exclude=None, tables=None, limit=HIST_LIMIT):
+    """跨桌读对局流水（tables/*/hands.jsonl），去重后按时间升序取最近 limit 手。
     opp 给定时只要该对手；exclude 给定时排除该对手（算群体参考）。"""
     seen, out = set(), []
-    for f in _hand_files(hands):
+    for f in _hand_files(tables):
         for l in f.read_text(encoding="utf-8").splitlines():
             try: h = json.loads(l)
             except ValueError: continue
@@ -190,12 +193,23 @@ def profile_type(t):
 
 
 def _profile_brief(table_dir, opp, cap=2500, prof=None):
-    """对手画像：prof=对手库里查到的画像；否则读 <opp>.md；都没有时给出提示"""
+    """对手画像：prof=后台查好的画像（本桌 <opp>.md 优先，其次对手库里最近一份）；否则读本桌 <opp>.md；都没有时给出提示"""
     if prof: return prof
     p = profile_path(table_dir, opp)
     if not p:
         return f"对手 {opp or '未知'}：暂无画像（样本不足），按 GTO 基线打，不做偏移。"
     return profile_text(p.read_text(), cap)
+
+
+def find_profile(table_dir, opp, row=None):
+    """（后台线程用）对手画像 {"profile","ptype","src"}：本桌 <opp>.md 优先；没有就用对手库行里最近一份（来自其他桌，作先验）；都没有 None"""
+    p = profile_path(table_dir, opp)
+    if p:
+        t = p.read_text(encoding="utf-8")
+        return {"profile": profile_text(t), "ptype": profile_type(t), "src": "本桌"}
+    if row and row.get("profile"):
+        return {"profile": "（本桌还没有画像，以下是该对手在其他桌的最近一份画像，仅作先验）\n" + row["profile"], "ptype": row.get("ptype"), "src": "他桌"}
+    return None
 
 
 ORDER = ["翻前", "翻牌", "转牌", "河牌"]
@@ -414,8 +428,8 @@ ACT = (("弃牌", "fold"), ("让牌", "check"), ("平跟", "limp"), ("跟注", "
 
 
 def hand_detail(rec, table=None, msgs=None):
-    """一手的对局流水记录（写 hands/YYYY-MM.jsonl）：hid + 原始记录（重建统计用）+ 逐个动作的位置/类型/注码（BB）；
-    msgs=该手模型对话所在文件（logs/<日期>/msgs.jsonl，按 hid 关联）。
+    """一手的对局流水记录（写 tables/<桌>/hands.jsonl）：hid + 原始记录（重建统计用）+ 逐个动作的位置/类型/注码（BB）；
+    msgs=该手模型对话所在文件（tables/<桌>/msgs.jsonl，按 hid 关联）。
     acts[i] = {st 街, who me/opp, pos BTN/BB, act fold/check/limp/call/bet/raise/allin, add 本次投入, to 本街累计到,
                pot 动作前底池, left 动作后剩余筹码（起始筹码未知时为 None）}"""
     pos = rec.get("pos")
@@ -489,18 +503,18 @@ class HandSession:
     """维护 session 模式的请求。build() 生成本次请求（本手完整记录，单条 user）；commit() 记下模型回复。"""
     def __init__(self, table_dir=None, opp=None, keep_hands=6, hands_log=None, on_hand_end=None, hero_name=None,
                  history=None, population=None, warm=False, votes=3, log=print, store=None, store_write=False, hist_stats=None,
-                 hands_dir=None, msgs_log=None):
+                 msgs_log=None):
         """history=该对手此前（跨桌）已结束的手 / hist_stats=其累计统计计数，热启动；population=其他对手的手，对手样本少时作群体参考（冷启动）。
         对手昵称由 see_opp() 从截图识别（多帧投票），识别到/换人后 warm=True 时后台加载该对手跨桌历史，下一手开始生效；
         opp 参数只是初始值（可为 None）。
-        每手记录：hands_log=固定文件（回放/测试）或 hands_dir=按月滚动的流水目录（真机：hands/YYYY-MM.jsonl）；
-        msgs_log=模型对话文件（按 hid 关联，流水里 msgs 字段记它的路径）。
+        每手记录：hands_log=对局流水文件（真机：tables/<桌>/hands.jsonl；回放：logs/<日期>/hands__*.jsonl）；
+        msgs_log=模型对话文件（真机：tables/<桌>/msgs.jsonl；按 hid 关联，流水里 msgs 字段记它的路径）。
         store=对手库 OppDB：有它时历史统计/画像/群体参考按主键查库；store_write=True（仅真机）时每手把计数直接加进库（不读 jsonl）。"""
         self.table_dir, self.opp, self.keep = table_dir, opp, keep_hands
         self.hist_S = hist_stats or (opp_stats(history) if history else None)
-        self.prof = None                     # 对手库里的画像 {"profile","ptype"}
+        self.prof = None                     # 对手画像 {"profile","ptype","src"}：本桌 <opp>.md 优先，其次对手库里最近一份
         self.store, self.store_write = store, store_write
-        self.hands_dir, self.msgs_log = hands_dir, msgs_log
+        self.msgs_log = msgs_log
         self.sid = time.strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(2)      # 本次运行的 id；hid = sid-手序号
         self.pop = opp_stats(population) if population else (store.pop(opp) if store and warm else None)
         self.warm, self.need_votes, self.log = warm, votes, log
@@ -537,15 +551,16 @@ class HandSession:
         self._loading = raw
         def run():
             try:
-                if not self.warm: self._pending = (display_name(raw), None, None, None)
+                if not self.warm:
+                    name = display_name(raw); self._pending = (name, None, None, find_profile(self.table_dir, name))
                 elif self.store:                    # 对手库：按主键查库
                     d = self.store.lookup(raw)
                     name = d["name"] if d else display_name(raw)
-                    self._pending = (name, d and d["stats"], self.store.pop(name), d)
-                else:                               # 无库：扫 jsonl
+                    self._pending = (name, d and d["stats"], self.store.pop(name), find_profile(self.table_dir, name, d))
+                else:                               # 无库：扫各桌 jsonl
                     name = display_name(raw, known_names())
                     hist, pop = load_hands(name), load_hands(exclude=name)
-                    self._pending = (name, opp_stats(hist) if hist else None, opp_stats(pop) if pop else None, None)
+                    self._pending = (name, opp_stats(hist) if hist else None, opp_stats(pop) if pop else None, find_profile(self.table_dir, name))
             except Exception as e:
                 self.log(f"[session] 加载对手 {raw} 失败: {type(e).__name__}: {e}")
                 self._pending = (display_name(raw), None, None, None)
@@ -556,20 +571,24 @@ class HandSession:
     def _apply_pending(self):
         """手与手之间切换到识别出的对手：此前对手未知 → 已结束的手补上昵称；换了人 → 本局统计/近况清空"""
         if self._pending is None: return
-        name, hist, pop, row = self._pending; self._pending = None
-        if same_opp(name, self.opp): self.opp = name; return
+        name, hist, pop, prof = self._pending; self._pending = None
+        if same_opp(name, self.opp):                 # --opp 初值就是这个人：补上历史/画像（本局还没打过手时才并入，免得和本局重复计）
+            self.opp = name
+            if not self.hands and self.hist_S is None: self.hist_S, self.pop = hist, pop or self.pop
+            if prof and not self.prof: self.prof = prof
+            return
         if self.opp is None:
             for h in self.hands: h["opp"] = name
         else:
             self.hands, self.recent = [], []
         self.opp, self.hist_S, self.pop = name, hist, pop
-        self.prof = {"profile": row["profile"], "ptype": row["ptype"]} if row and row.get("profile") else None
+        self.prof = prof
         self._static()
         for rec in self._unwritten:
             rec["opp"] = name; self._emit(rec)
         self._unwritten = []
         self.log(f"[session] 识别到对手 {name}：跨桌历史 {hist['n'] if hist else 0} 手，群体参考 {pop['n'] if pop else 0} 手"
-                 + ("，已载入画像" if self.prof else ""))
+                 + (f"，已载入画像（{self.prof['src']}）" if self.prof else ""))
 
     def _emit(self, rec):
         """一手结束：交给后台写线程（按顺序：追加 jsonl → 累计进对手库 → 画像回调 → 取最新画像），主线程只入队"""
@@ -591,7 +610,7 @@ class HandSession:
             with open(p, "a", encoding="utf-8") as f:
                 f.write(json.dumps({"hid": rec.get("hid"), "t": rec.get("t"), "opp": rec.get("opp"), "msgs": rec["msgs"]}, ensure_ascii=False) + "\n")
             msgs = rel(p)
-        p = self.hands_log or (Path(self.hands_dir) / f"{(rec.get('t') or time.strftime('%Y-%m'))[:7]}.jsonl" if self.hands_dir else None)
+        p = self.hands_log
         if p:
             p = Path(os.fspath(p)); p.parent.mkdir(parents=True, exist_ok=True)
             tb = Path(self.table_dir).name if self.table_dir else None
@@ -602,9 +621,10 @@ class HandSession:
         if self.on_hand_end:
             try: self.on_hand_end(rec, self)
             except Exception: pass
-        if self.store is not None and rec.get("opp"):    # 画像可能被 ProfileUpdater 更新过：查好放着，下一手开始时直接换上
-            d = self.store.lookup(rec["opp"])
-            if d and d.get("profile"): self._prof_new = (d["name"], {"profile": d["profile"], "ptype": d["ptype"]})
+        if rec.get("opp"):    # 画像可能被 ProfileUpdater 更新过：查好放着，下一手开始时直接换上（本桌 md 优先，其次库里最近一份）
+            d = self.store.lookup(rec["opp"]) if self.store is not None else None
+            pf = find_profile(self.table_dir, rec["opp"], d)
+            if pf: self._prof_new = (rec["opp"], pf)
 
     def flush(self):
         """等后台写完（退出前 / 测试用）；对手一直没识别出来的手也写进流水（opp=null，不计入对手库）"""
@@ -753,7 +773,8 @@ def flatten(req):
 
 PROFILE_PROMPT = """你在维护德州扑克对手画像。下面是模板、旧画像（可能为空）和机器人最近记录的手牌（代码自动记录：行动线、结束方式、我方盈亏；
 看不到对手底牌，除非注明）。请输出完整的新画像 Markdown（沿用模板结构），要求：
-- 统计计数器按这些手牌能确认的数据累加到旧数据上，看不出来的不要编；画像跨桌通用，“其他出现过的桌”里补上本桌；
+- 这是本桌画像（同一人在不同桌可能打法不同）：统计计数器按这些手牌能确认的数据累加到旧画像上，看不出来的不要编；
+  旧画像若注明来自其他桌，只作先验，计数从本桌手牌重新累计，“其他出现过的桌”里写上来源桌；
 - 样本少（<100 手）时类型判断写“初判”，可信度标低，偏移策略要保守；
 - “已确认漏洞”每条要写证据（第几手/统计）；
 - “最后更新”写到最新手的序号与时间。
@@ -770,10 +791,9 @@ PROFILE_PROMPT = """你在维护德州扑克对手画像。下面是模板、旧
 
 
 class ProfileUpdater:
-    """每 every 手异步调一次模型更新 <table>/<opp>.md（不在决策路径上）。replay 时不要启用。"""
-    def __init__(self, model, table_dir, opp, every=10, players=None, store=None):
+    """每 every 手异步调一次模型更新本桌画像 tables/<桌>/<opp>.md（不在决策路径上），写完同步进对手库。replay 时不要启用。"""
+    def __init__(self, model, table_dir, opp, every=10, store=None):
         self.model, self.dir, self.opp, self.every, self.store = model, Path(table_dir), opp, every, store
-        self.players = Path(players or PLAYERS)
         self.buf, self.busy = [], False
 
     def __call__(self, rec, sess):
@@ -788,10 +808,14 @@ class ProfileUpdater:
     def _run(self, hands, opp=None):
         opp = opp or self.opp
         try:
-            old = profile_path(self.dir, opp, self.players)           # 旧画像：全局或桌内较新的一份
-            p = self.players / f"{safe_name(opp)}.md"                  # 新画像统一写全局，换桌也能直接用
+            old = profile_path(self.dir, opp)                          # 旧画像：本桌的；本桌没有就用库里最近一份（他桌）作先验
+            if old: old_t = old.read_text()
+            else:
+                d = self.store.lookup(opp) if self.store is not None else None
+                old_t = f"（来自其他桌，仅作先验）\n{d['profile']}" if d and d.get("profile") else "(无)"
+            p = old or self.dir / f"{safe_name(opp)}.md"
             tpl = (self.dir.parent / "_template" / "_user_template.md")
-            prompt = PROFILE_PROMPT.format(opp=opp, table=self.dir.name, tpl=tpl.read_text() if tpl.exists() else "", old=old.read_text() if old else "(无)",
+            prompt = PROFILE_PROMPT.format(opp=opp, table=self.dir.name, tpl=tpl.read_text() if tpl.exists() else "", old=old_t,
                                            hands="\n".join(json.dumps(h, ensure_ascii=False) for h in hands))
             md = self.model(prompt, timeout=180, max_tokens=4000).strip()
             md = re.sub(r"^```(?:markdown)?\n|\n```$", "", md)

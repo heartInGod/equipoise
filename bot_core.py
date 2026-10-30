@@ -645,11 +645,16 @@ class Bot:
 def make_session(a, model=None, live=False):
     """--prompt session 时构造 HandSession；真机模式写 <table>/bot_hands.jsonl 并按 --profile-every 异步更新画像"""
     if getattr(a, "prompt", None) != "session": return None
-    from session_prompt import HandSession, ProfileUpdater
+    from session_prompt import HandSession, ProfileUpdater, load_hands
     tdir = ROOT / a.table if getattr(a, "table", None) else None
     upd = ProfileUpdater(model, tdir, a.opp, every=a.profile_every) if live and model and tdir and a.opp and a.profile_every > 0 else None
     hl = (tdir / "bot_hands.jsonl") if live and tdir else logroll.path(f"hands__{time.strftime('%m%d_%H%M')}.jsonl")
-    return HandSession(tdir, a.opp, hands_log=hl, on_hand_end=upd)
+    warm = getattr(a, "warm", None)
+    warm = live if warm is None else warm          # 真机默认热启动；回放默认不载入（历史里可能就有被回放的手）
+    hist = load_hands(a.opp) if warm and a.opp else []
+    pop = load_hands(exclude=a.opp) if warm else []
+    if warm: print(f"[session] 对手 {a.opp} 历史 {len(hist)} 手（跨桌），群体参考 {len(pop)} 手", flush=True)
+    return HandSession(tdir, a.opp, hands_log=hl, on_hand_end=upd, history=hist, population=pop)
 
 
 def run_live(a):

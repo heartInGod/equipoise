@@ -94,10 +94,57 @@ def _table_brief(table_dir):
     return "\n".join(l for l in L if re.match(r"- (平台|游戏|级别|金额单位|Hero)", l)) or "- WePoker 练习局，盲注 1/2（筹码），单挑。"
 
 
+ROOT = Path(__file__).resolve().parent
+PLAYERS = ROOT / "players"          # 跨桌对手库：players/<opp>.md 全局画像，players/<opp>/hands.jsonl 导入的历史手
+TABLES = ROOT / "tables"
+HIST_LIMIT = 1000                   # 热启动最多载入最近多少手
+COLD_N = 30                         # 对手累计少于这么多手时附“群体参考”
+
+
+def safe_name(opp):
+    """昵称 -> 文件名（空格/特殊字符换成 _）"""
+    return re.sub(r"[^\w.-]", "_", opp or "").strip("._") or "unknown"
+
+
+def profile_path(table_dir, opp, players=None):
+    """对手画像文件：全局 players/<opp>.md 与桌内 <table>/<opp>.md 取较新的一份；都没有返回 None"""
+    if not opp: return None
+    c = [Path(players or PLAYERS) / f"{safe_name(opp)}.md"]
+    if table_dir: c += [Path(table_dir) / f"{opp}.md", Path(table_dir) / f"{safe_name(opp)}.md"]
+    c = [p for p in c if p.exists()]
+    return max(c, key=lambda p: p.stat().st_mtime) if c else None
+
+
+def hand_key(h):
+    """同一手牌的去重键（回放会把同一批帧重复记录多次，时间戳不同但牌和行动线相同）"""
+    return json.dumps([h.get("pos"), h.get("hero"), h.get("board"), h.get("ev")], ensure_ascii=False)
+
+
+def _hand_files(tables=None, players=None):
+    return sorted(Path(tables or TABLES).glob("*/bot_hands.jsonl")) + sorted(Path(players or PLAYERS).glob("*/hands.jsonl"))
+
+
+def load_hands(opp=None, exclude=None, tables=None, players=None, limit=HIST_LIMIT):
+    """跨桌读机器人记录的手（tables/*/bot_hands.jsonl + players/*/hands.jsonl），去重后按时间升序取最近 limit 手。
+    opp 给定时只要该对手；exclude 给定时排除该对手（算群体参考）。"""
+    seen, out = set(), []
+    for f in _hand_files(tables, players):
+        for l in f.read_text(encoding="utf-8").splitlines():
+            try: h = json.loads(l)
+            except ValueError: continue
+            o = h.get("opp")
+            if (opp is not None and o != opp) or (exclude is not None and o == exclude): continue
+            k = hand_key(h)
+            if k in seen: continue
+            seen.add(k); out.append({k2: h.get(k2) for k2 in ("t", "n", "opp", "pos", "hero", "board", "ev", "how", "delta")})
+    out.sort(key=lambda h: h.get("t") or "")
+    return out[-limit:] if limit else out
+
+
 def _profile_brief(table_dir, opp, cap=2500):
     """对手画像：<opp>.md 去掉更新日志，截断到 cap 字；没有画像时给出提示"""
-    p = Path(table_dir) / f"{opp}.md" if table_dir and opp else None
-    if not p or not p.exists():
+    p = profile_path(table_dir, opp)
+    if not p:
         return f"对手 {opp or '未知'}：暂无画像（样本不足），按 GTO 基线打，不做偏移。"
     t = p.read_text()
     t = re.split(r"\n## 7\. 更新日志", t)[0]
@@ -167,8 +214,8 @@ def opp_stats(hands):
 
 def _type_line(table_dir, opp):
     """<opp>.md 里「类型：」一行（模板占位不算）"""
-    p = Path(table_dir) / f"{opp}.md" if table_dir and opp else None
-    if not p or not p.exists(): return None
+    p = profile_path(table_dir, opp)
+    if not p: return None
     m = re.search(r"^- 类型[：:]\s*(.+)$", p.read_text(), re.M)
     t = m.group(1).strip() if m else ""
     return None if not t or "/" in t else t[:30]
@@ -190,15 +237,23 @@ def opp_desc(S, table_dir=None, opp=None):
     return ("初判（样本少）" if S["n"] < 30 else "") + d
 
 
-def profile_block(S, desc):
-    """手牌下方的对手画像：本局全部统计 + 简短描述（后续动作行不再重复）"""
-    if not S["n"]: return [f"  本局还没有已结束的手，无统计；简述：{desc}"]
+def profile_block(S, desc, n_hist=0, pop=None):
+    """手牌下方的对手画像：统计（有历史时为累计=历史+本局）+ 简短描述（后续动作行不再重复）；
+    pop=群体统计（对手样本少时作冷启动参考）"""
+    tail = []
+    if pop and pop["n"] and S["n"] < COLD_N:
+        tail = [f"  群体参考（其他对手共{pop['n']}手，该对手样本少时向它回归）："] + ["  " + l for l in _stat_lines(pop, "群体")]
+    if not S["n"]: return [f"  本局还没有已结束的手，无统计；简述：{desc}"] + tail
+    scope = f"累计{S['n']}手(此前{n_hist}+本局{S['n'] - n_hist})" if n_hist else f"本局{S['n']}手"
+    return _stat_lines(S, scope) + [f"  简述：{desc}"] + tail
+
+
+def _stat_lines(S, scope):
     af = f"{S['agg'] / S['calls']:.1f}" if S["calls"] else "—"
-    return [f"  翻前：本局{S['n']}手 开池{_pct(S['open'], S['btn'])}、limp{_pct(S['limp'], S['btn'])}、3B{_pct(S['b3'], S['vs_open'])}、"
+    return [f"  翻前：{scope} 开池{_pct(S['open'], S['btn'])}、limp{_pct(S['limp'], S['btn'])}、3B{_pct(S['b3'], S['vs_open'])}、"
             f"大盲面对开池弃{_pct(S['bb_fold'], S['vs_open'])}、面对3B弃{_pct(S['f3_fold'], S['f3_opp'])}、VPIP{_pct(S['vp'], S['vp_n'])}",
             f"  翻牌：cbet{_pct(S['cb'], S['cb_opp'])}、面对cbet弃{_pct(S['fcb'], S['fcb_opp'])}、看翻牌{S['flop']}手",
-            f"  转牌/河牌：翻后下注加注{S['agg']}次/跟注{S['calls']}次（AF {af}）、到摊牌{_pct(S['wtsd'], S['flop'])}",
-            f"  简述：{desc}"]
+            f"  转牌/河牌：翻后下注加注{S['agg']}次/跟注{S['calls']}次（AF {af}）、到摊牌{_pct(S['wtsd'], S['flop'])}"]
 
 
 def walk(ev, hero_pos):
@@ -290,17 +345,27 @@ def snapshot_bb(st, hist):
 
 class HandSession:
     """维护 session 模式的请求。build() 生成本次请求（本手完整记录，单条 user）；commit() 记下模型回复。"""
-    def __init__(self, table_dir=None, opp=None, keep_hands=6, hands_log=None, on_hand_end=None, hero_name=None):
+    def __init__(self, table_dir=None, opp=None, keep_hands=6, hands_log=None, on_hand_end=None, hero_name=None,
+                 history=None, population=None):
+        """history=该对手此前（跨桌）已结束的手，热启动统计；population=其他对手的手，对手样本少时作群体参考（冷启动）"""
         self.table_dir, self.opp, self.keep = table_dir, opp, keep_hands
+        self.history = list(history or [])
+        self.pop = opp_stats(population) if population else None
         self.static = SYS_STATIC.format(exploit=_exploit_table(), reference=_reference(), table=_table_brief(table_dir) + (f"\n- 当前对手：{opp}" if opp else ""))
         self.hands_log, self.on_hand_end = hands_log, on_hand_end
         self.hero_name = hero_name or self._hero_name(table_dir)
         self.recent, self.hands = [], []     # 最近几手摘要（文本） / 本局已结束手的结构化记录（算统计）
         self.msgs, self.ev_ref = [], None
         self.cur = None                      # 当前手：{"hero","board","pos","start_total","ev","start"}
-        self.stats = opp_stats([]); self.desc = opp_desc(self.stats, table_dir, opp)
+        self._restat()
         self.dynamic = self._dyn()
         self.n_hands = 0
+
+    def _restat(self):
+        self.stats = opp_stats(self.history + self.hands)
+        self.desc = opp_desc(self.stats, self.table_dir, self.opp)
+        if self.stats["n"] < 4 and self.pop and self.pop["vp_n"] >= 4 and not _type_line(self.table_dir, self.opp):
+            self.desc = "新对手无样本，先按群体倾向（" + opp_desc(self.pop).replace("初判（样本少）", "") + "）小幅偏移、贴近基线"
 
     @staticmethod
     def _hero_name(table_dir):
@@ -310,6 +375,8 @@ class HandSession:
 
     def _dyn(self):
         L = ["## 对手画像（手与手之间由代码更新）", _profile_brief(self.table_dir, self.opp)]
+        if self.history and not self.recent:
+            L += ["", f"## 与该对手的历史（此前 {len(self.history)} 手，跨桌累计；统计已并入手牌下方的对手画像）"]
         L += ["", "## 最近几手（代码记录，单位 BB）"] + (self.recent[-self.keep:] or ["(本局刚开始)"])
         return "\n".join(L)
 
@@ -385,7 +452,7 @@ class HandSession:
              f"当前手牌 {' '.join(st['hero'])}（{wpstate.hand_desc(st['hero'])}" + (f"，{rk[0]} 前{rk[1]['top']:.0f}%" if rk else "") + "）；"
              f"我方 {self._name('me', pos)}，对手 {self._name('opp', OTHER.get(pos))}"]
         if not any(e.startswith("对手弃牌") for _, e in hist.ev):      # 只写未弃牌的对手（单挑时就是唯一的对手）
-            L += [f"对手画像 {self._name('opp', OTHER.get(pos))}（本局统计，次数/机会=频率）"] + profile_block(self.stats, self.desc)
+            L += [f"对手画像 {self._name('opp', OTHER.get(pos))}（本局统计，次数/机会=频率）"] + profile_block(self.stats, self.desc, len(self.history), self.pop)
         L += [f"起始筹码 我方 {bb(s.get('me'))}BB / 对手 {bb(s.get('opp'))}BB"]
         L += self.lines(hist.ev, pos, st["board"], s, cur_street=street)
         L += ["当前局面（代码计算）"] + snapshot_bb(st, hist)
@@ -399,7 +466,7 @@ class HandSession:
             self.n_hands += 1
             self.ev_ref, self.msgs = hist.ev, []
             self.cur = {"hero": list(st["hero"]), "board": [], "pos": hist.pos, "start_total": self._total(st), "ev": hist.ev, "start": {}}
-            self.stats = opp_stats(self.hands); self.desc = opp_desc(self.stats, self.table_dir, self.opp)
+            self._restat()
             self.dynamic = self._dyn()           # 画像/近况/统计只在手开始时刷新，手内 system 保持不变
         self.cur["board"] = list(st["board"])
         if self.cur["pos"] is None: self.cur["pos"] = hist.pos
@@ -425,7 +492,7 @@ def flatten(req):
 
 PROFILE_PROMPT = """你在维护德州扑克对手画像。下面是模板、旧画像（可能为空）和机器人最近记录的手牌（代码自动记录：行动线、结束方式、我方盈亏；
 看不到对手底牌，除非注明）。请输出完整的新画像 Markdown（沿用模板结构），要求：
-- 统计计数器按这些手牌能确认的数据累加到旧数据上，看不出来的不要编；
+- 统计计数器按这些手牌能确认的数据累加到旧数据上，看不出来的不要编；画像跨桌通用，“其他出现过的桌”里补上本桌；
 - 样本少（<100 手）时类型判断写“初判”，可信度标低，偏移策略要保守；
 - “已确认漏洞”每条要写证据（第几手/统计）；
 - “最后更新”写到最新手的序号与时间。
@@ -443,8 +510,9 @@ PROFILE_PROMPT = """你在维护德州扑克对手画像。下面是模板、旧
 
 class ProfileUpdater:
     """每 every 手异步调一次模型更新 <table>/<opp>.md（不在决策路径上）。replay 时不要启用。"""
-    def __init__(self, model, table_dir, opp, every=10):
+    def __init__(self, model, table_dir, opp, every=10, players=None):
         self.model, self.dir, self.opp, self.every = model, Path(table_dir), opp, every
+        self.players = Path(players or PLAYERS)
         self.buf, self.busy = [], False
 
     def __call__(self, rec, sess):
@@ -455,13 +523,15 @@ class ProfileUpdater:
 
     def _run(self, hands):
         try:
-            p = self.dir / f"{self.opp}.md"
+            old = profile_path(self.dir, self.opp, self.players)           # 旧画像：全局或桌内较新的一份
+            p = self.players / f"{safe_name(self.opp)}.md"                  # 新画像统一写全局，换桌也能直接用
             tpl = (self.dir.parent / "_template" / "_user_template.md")
-            prompt = PROFILE_PROMPT.format(opp=self.opp, table=self.dir.name, tpl=tpl.read_text() if tpl.exists() else "", old=p.read_text() if p.exists() else "(无)",
+            prompt = PROFILE_PROMPT.format(opp=self.opp, table=self.dir.name, tpl=tpl.read_text() if tpl.exists() else "", old=old.read_text() if old else "(无)",
                                            hands="\n".join(json.dumps(h, ensure_ascii=False) for h in hands))
             md = self.model(prompt, timeout=180, max_tokens=4000).strip()
             md = re.sub(r"^```(?:markdown)?\n|\n```$", "", md)
             if md.startswith("# "):
+                p.parent.mkdir(parents=True, exist_ok=True)
                 if p.exists(): p.with_suffix(".md.bak").write_text(p.read_text())
                 p.write_text(md + "\n")
         except Exception as e:

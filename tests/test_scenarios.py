@@ -591,6 +591,40 @@ class TestSession(unittest.TestCase):
         self.assertIn("手牌 #1", self.model.calls[1]["system"][1]["text"])
         self.assertIn("手牌 #2", self.model.calls[1]["messages"][0]["content"])   # 近况注入下一手的 system
 
+    def test_warm_start_from_other_table(self):
+        """热启动：对手在别的桌的历史手并入统计；冷启动：新对手给群体参考；同一手多次记录只算一次"""
+        P = self.P
+        root = Path(self.tmp); tables, players = root / "tables", root / "players"
+        (tables / "old_table").mkdir(parents=True)
+        h_open = {"t": "2026-10-29 10:00:00", "opp": "villain", "pos": "BB", "hero": ["7c", "2d"], "board": [],
+                  "ev": [["翻前", "对手开局加注到 4"], ["翻前", "我方弃牌"]], "how": "我方弃牌", "delta": -2}
+        rows = [dict(h_open, hero=[f"{r}c", "2d"]) for r in "3456789"] + [dict(h_open, hero=["3c", "2d"], t="x")]   # 最后一条与第一条重复
+        rows.append(dict(h_open, opp="other"))
+        (tables / "old_table" / "bot_hands.jsonl").write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
+        hist = P.load_hands("villain", tables=tables, players=players)
+        pop = P.load_hands(exclude="villain", tables=tables, players=players)
+        self.assertEqual(len(hist), 7); self.assertEqual(len(pop), 1)
+        sess = P.HandSession(None, "villain", history=hist, population=pop)
+        req, u = sess.build(self.pre(), S.HandHist())
+        self.assertIn("累计7手(此前7+本局0)", u); self.assertIn("开池7/7=100%", u)
+        self.assertIn("此前 7 手", req["system"][1]["text"])
+        self.assertIn("群体参考（其他对手共1手", u)                       # 样本 < 30 手仍附群体参考
+        new = P.HandSession(None, "newbie", population=hist)
+        _, u2 = new.build(self.pre(), S.HandHist())
+        self.assertIn("新对手无样本，先按群体倾向", u2); self.assertIn("群体参考（其他对手共7手", u2)
+        self.assertNotIn("群体参考", P.HandSession(None, "x", history=hist * 5).build(self.pre(), S.HandHist())[1])  # ≥30 手不再附
+
+    def test_profile_path_prefers_newer(self):
+        P = self.P
+        root = Path(self.tmp); players, tdir = root / "players", root / "t1"
+        players.mkdir(); tdir.mkdir()
+        g, t = players / "vil_lain.md", tdir / "vil lain.md"
+        g.write_text("# g"); t.write_text("# t"); os.utime(g, (1, 1))
+        self.assertEqual(P.profile_path(tdir, "vil lain", players), t)
+        os.utime(g, (2e9, 2e9)); self.assertEqual(P.profile_path(tdir, "vil lain", players), g)
+        self.assertEqual(P.profile_path(root / "nope", "vil lain", players), g)    # 换桌后仍能找到全局画像
+        self.assertIsNone(P.profile_path(tdir, "nobody", players))
+
     def test_flatten_for_generic(self):
         req, _ = self.sess.build(self.pre(), S.HandHist())
         t = self.P.flatten(req)

@@ -11,3 +11,4 @@ tools/ocr
 # 画像自动更新的备份
 tables/**/*.md.bak
 players/**/*.md.bak
+players/*.db*

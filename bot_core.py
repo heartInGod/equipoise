@@ -650,12 +650,22 @@ def make_session(a, model=None, live=False):
     from session_prompt import HandSession, ProfileUpdater
     tdir = ROOT / a.table if getattr(a, "table", None) else None
     opp = getattr(a, "opp", None)
-    upd = ProfileUpdater(model, tdir, opp, every=a.profile_every) if live and model and tdir and a.profile_every > 0 else None
     hl = (tdir / "bot_hands.jsonl") if live and tdir else logroll.path(f"hands__{time.strftime('%m%d_%H%M')}.jsonl")
     warm = getattr(a, "warm", None)
     warm = live if warm is None else warm          # 真机默认热启动；回放默认不载入（历史里可能就有被回放的手）
-    # 对手昵称从截图识别（Bot.handle -> sess.see_opp），识别到/换人后后台加载其跨桌历史，下一手生效；--opp 只是可选初值
-    return HandSession(tdir, opp, hands_log=hl, on_hand_end=upd, warm=warm,
+    # 对手昵称从截图识别（Bot.handle -> sess.see_opp），识别到/换人后取其跨桌统计+画像，下一手生效；--opp 只是可选初值
+    store = None
+    if warm:                                       # 对手库：jsonl 增量累计进 players 表（统计+画像），整表热加载进内存
+        try:
+            import oppdb
+            from session_prompt import _hand_files, _profile_files
+            store = oppdb.open_db(_hand_files(), _profile_files())
+            np_, nh = store.counts()
+            print(f"[oppdb] 对手 {np_} 人 / 累计 {nh} 手已热加载（本次累计新增 {store.synced} 手，{store.load_ms:.1f}ms）", flush=True)
+        except Exception as e:
+            print(f"[oppdb] 打开失败，退回扫 jsonl: {type(e).__name__}: {e}", flush=True)
+    upd = ProfileUpdater(model, tdir, opp, every=a.profile_every, store=store) if live and model and tdir and a.profile_every > 0 else None
+    return HandSession(tdir, opp, hands_log=hl, on_hand_end=upd, warm=warm, store=store, store_write=live and tdir is not None,
                        log=lambda m: print(m, flush=True))
 
 

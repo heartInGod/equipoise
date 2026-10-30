@@ -452,7 +452,7 @@ class HandSession:
              f"当前手牌 {' '.join(st['hero'])}（{wpstate.hand_desc(st['hero'])}" + (f"，{rk[0]} 前{rk[1]['top']:.0f}%" if rk else "") + "）；"
              f"我方 {self._name('me', pos)}，对手 {self._name('opp', OTHER.get(pos))}"]
         if not any(e.startswith("对手弃牌") for _, e in hist.ev):      # 只写未弃牌的对手（单挑时就是唯一的对手）
-            L += [f"对手画像 {self._name('opp', OTHER.get(pos))}（本局统计，次数/机会=频率）"] + profile_block(self.stats, self.desc, len(self.history), self.pop)
+            L += [f"对手画像 {self._name('opp', OTHER.get(pos))}（" + ("跨桌累计统计" if self.history else "本局统计") + "，次数/机会=频率）"] + profile_block(self.stats, self.desc, len(self.history), self.pop)
         L += [f"起始筹码 我方 {bb(s.get('me'))}BB / 对手 {bb(s.get('opp'))}BB"]
         L += self.lines(hist.ev, pos, st["board"], s, cur_street=street)
         L += ["当前局面（代码计算）"] + snapshot_bb(st, hist)

@@ -661,9 +661,27 @@ def preflop_rank(hero):
     return (k, _PFR[k]) if k in _PFR else None
 
 
-def vs_big_eq(eq):
-    """翻前面对全下/大额加注时对其（较窄）范围的估计胜率：弱牌打 7 折，强牌最多扣 12 个点"""
-    return max(eq * 0.7, eq - 12)
+def big_range(level=2, raise_bb=None):
+    """翻前面对大注时对手范围宽度（前 X%）：面对 4bet+ 约前 5%（QQ+/AK），面对 3bet 前 10%；
+    开局大注/全下按加注到多少 BB：≤12BB 前 50%，≤25BB 前 35%，≤50BB 前 20%，更大前 10%"""
+    if level >= 4: return 5
+    if level == 3: return 10
+    r = raise_bb or 0
+    return 50 if r <= 12 else 35 if r <= 25 else 20 if r <= 50 else 10
+
+
+def vs_big_eq(info, level=2, raise_bb=None):
+    """翻前面对全下/大额加注：(对其范围的胜率%, 范围前X%)。info=preflop_rank()[1]；
+    胜率查 preflop_rank.json 的 vs 表（make_preflop_rank.py --vs 生成），没有该表时退回旧估计（弱牌 7 折、强牌扣 12 点）"""
+    x = big_range(level, raise_bb)
+    vs = info.get("vs")
+    if vs: return vs[str(x)], x
+    return max(info["eq"] * 0.7, info["eq"] - 12), x
+
+
+def big_line(info, need, level=2, raise_bb=None):
+    e, x = vs_big_eq(info, level, raise_bb)
+    return f"翻前面对大注 对其范围(约前{x}%)胜率约 {e:.0f}% {'≥' if e >= need else '<'} 所需 {need:.0f}%（{'够跟' if e >= need else '不够'}）"
 
 
 def cap_call(n):
@@ -705,8 +723,8 @@ def brief_text(st, hist=None, hist_line=True):
         pot, tc = cap_call(n)
         L.append(f"需跟注 {tc}，所需胜率 {tc / ((pot or 0) + tc) * 100:.0f}%" + ("（跟注即全下）" if ms is not None and tc >= ms else ""))
         if pr and tc > 10:        # 翻前面对全下/大额加注：对手范围变窄，用 vs_big_eq 估计胜率
-            e, need = vs_big_eq(pr[1]["eq"]), tc / ((pot or 0) + tc) * 100
-            L.append(f"翻前面对大注 对其范围胜率约 {e:.0f}% {'≥' if e >= need else '<'} 所需 {need:.0f}%（{'够跟' if e >= need else '不够'}）")
+            lv = hist.level if hist is not None and hist.street == "翻前" else 2
+            L.append(big_line(pr[1], tc / ((pot or 0) + tc) * 100, lv, (n.get("opp_bet") or 0) / 2))
     if md and len(board) in (3, 4):
         L.extend(draw_line(md[-1], len(board), "听牌胜率(代码算)"))
     if hist_line and hist is not None and hist.ev:

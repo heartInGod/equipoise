@@ -329,14 +329,28 @@ def board_danger(board):
     return {"fl4": mx >= 4, "st4": st4, "fl3": mx >= 3, "paired": len(set(bv)) < len(bv)}
 
 
+def _flush_beaten(hero, board):
+    """公共牌 ≥4 张同花时，未出现的同花色牌里比我方最大同花色手牌大的张数（越多越危险）"""
+    suits = [c[-1] for c in board]
+    s = max(set(suits), key=suits.count)
+    mine = [wpstate._rv(c) for c in hero if c[-1] == s]
+    if not mine: return 99
+    sv = lambda cs: wpstate._straight_hi([wpstate._rv(c) for c in cs if c[-1] == s]) or 0
+    if sv(board + list(hero)) > sv(board): return 0      # 我方组成同花顺（made_desc 不区分同花顺）
+    seen = {wpstate._rv(c) for c in board + list(hero) if c[-1] == s}
+    return sum(1 for r in range(max(mine) + 1, 15) if r not in seen)
+
+
 def _downgrade(hero, board, md):
     """兜底规则里“强牌”在危险牌面降为中等牌（只过牌/便宜跟注，不主动打价值）：
     - 顺子/同花/葫芦/四条 不降；
     - 公共牌四张同花或一张成顺 -> 两对、三条、顶对、超对都降；
     - 公共牌三张同花 -> 一对类（顶对/超对）降（公共牌有对子时 made_desc 给的是“两对”，走下一条）；
     - 两对里有一对是公共牌对子且比我方配上的那对大 -> 实际只是一对，降。"""
-    if re.search(r"顺子|同花\(我方|葫芦|四条", md): return False
     d = board_danger(board)
+    if d["fl4"] and re.search(r"同花\(我方", md) and not re.search(r"葫芦|四条|同花顺", md) and _flush_beaten(hero, board) >= 2:
+        return True                         # 四张同花公共牌上只用一张小牌成的同花：比它大的同花色牌还有 ≥2 张没出现
+    if re.search(r"顺子|同花\(我方|葫芦|四条", md): return False
     if d["fl4"] or d["st4"]: return True
     if re.search(r"顶对|超对", md) and d["fl3"]: return True
     if "两对" in md and "其中用到我方的" in md:
@@ -365,8 +379,10 @@ def rule_decide(st, hist=None):
         pr = wpstate.preflop_rank(st["hero"])
         if pr and lvl <= 1 and tc == 1 and can_bet and wpstate.usable_presets(st) and pr[1]["top"] <= 85:   # 按钮位首次行动：开局
             return bet(_pick_preset(st, ["2BB", "3BB"]), f"按钮开局 前{pr[1]['top']:.0f}%")
-        if pr and tc > 10 and wpstate.vs_big_eq(pr[1]["eq"]) >= need:   # 面对全下/大额加注：按对其范围的估计胜率对比赔率
-            return call(f"估计胜率{wpstate.vs_big_eq(pr[1]['eq']):.0f}%>=需{need:.0f}%")
+        if pr and tc > 10:                   # 面对全下/大额加注：按对其范围（按加注层级/大小估宽度）的胜率对比赔率
+            e, x = wpstate.vs_big_eq(pr[1], lvl, (n.get("opp_bet") or 0) / 2)
+            if e >= need: return call(f"对前{x}%胜率{e:.0f}%>=需{need:.0f}%")
+            return chk_fold(f"对前{x}%胜率{e:.0f}%<需{need:.0f}%")
         if c == "premium":
             if can_bet and lvl <= 2 and wpstate.usable_presets(st): return bet(_pick_preset(st, ["3BB", "1/2", "2/3"]), "强牌加注")
             return call("强牌跟注") if tc else chk_fold("强牌")

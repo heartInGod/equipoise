@@ -550,6 +550,26 @@ class TestRules(unittest.TestCase):
         d = self.act(hero=("Jd", "Qh"), board=("Ac", "Js", "8c", "Qd", "Kc"), buttons={"弃牌": FOLD, "跟注": CALL}, nums={"to_call": 5, "pot": 30})
         self.assertEqual(d["act"], "跟注")
 
+    def test_low_flush_on_four_flush_board_folds_to_jam(self):
+        """模型评测 river_4flush_low_flush_vs_jam：公共牌四张红桃，6 高同花面对全下，旧规则当强牌跟注"""
+        jam = dict(buttons={"弃牌": FOLD, "All in": [1064, 2733]}, nums={"pot": 205, "opp_bet": 189, "my_bet": 0, "to_call": 189, "my_stack": 189})
+        self.assertEqual(self.act(hero=("6h", "3d"), board=("Ah", "9h", "5h", "Kc", "2h"), **jam)["act"], "弃牌")
+        self.assertEqual(self.act(hero=("Kh", "3d"), board=("Ah", "9h", "5h", "Kc", "2h"), **jam)["act"], "跟注")   # 坚果同花照跟
+        self.assertEqual(self._bet_or_check(("6h", "7h"), ("8h", "9h", "Th", "2h")), "下注")                       # 同花顺不降级
+        self.assertEqual(self._bet_or_check(("6h", "3d"), ("Ah", "9h", "5h", "2h")), "让牌")                       # 小同花不打价值
+
+    def test_preflop_vs_4bet_uses_narrow_range(self):
+        """模型评测 pre_bb_vs_4bet_A5o：旧 vs_big_eq 不看加注层级，A5o 面对 4bet 估 46%“够跟”"""
+        h = S.HandHist(); h.street, h.level = "翻前", 4
+        st = mk(hero=("Ah", "5c"), buttons={"弃牌": FOLD, "跟注": CALL},
+                nums={"pot": 56, "opp_bet": 40, "my_bet": 16, "to_call": 24, "my_stack": 184, "opp_stack": 160})
+        self.assertEqual(C.rule_decide(st, h)["act"], "弃牌")
+        self.assertIn("前5%", S.brief_text(st, h)); self.assertIn("不够", S.brief_text(st, h))
+        info = S.preflop_rank(("Ac", "Ad"))[1]
+        self.assertGreaterEqual(S.vs_big_eq(info, 4)[0], 75)                                  # AA 对任何范围都够
+        self.assertEqual([S.big_range(2, r) for r in (10, 20, 40, 100)], [50, 35, 20, 10])
+        self.assertEqual((S.big_range(3), S.big_range(4), S.big_range(5)), (10, 5, 5))
+
 
 # ---------------------------------------------------------------- 7. 基础设施
 class TestModelEval(unittest.TestCase):

@@ -26,7 +26,7 @@ description: 德州扑克（无限注 NLH）职业牌手助手 + WePoker 真机�
 | `bot_core.py` | 机器人核心：`TPROMPT`、`Bot.handle`（每帧状态机）、`execute` 动作映射、`rule_decide` 本地规则兜底、`Decider`（对冲请求+deadline）、`AnthropicKA` 长连接池、`Grabber` 后台截图、`AdbIO` 常驻 adb shell、`AsyncWriter` | 改策略/流程/延迟 |
 | `tests/test_scenarios.py` | 场景测试（108 例，不连手机不调模型）；场景清单 `tests/SCENARIOS.md`；golden 生成 `tests/make_golden.py` | 改代码后必跑 |
 | `session_prompt.py` | `--prompt session`：`SYS_STATIC` 开局长 system（牌桌/规则/策略/偏移表 + `_reference()` 参考资料块：gto.md §8.1 单挑统计参考值/§6.2/§2.5/§2.6/§7、technology.md §2.4/§4.1/§4.2，改这些章节会直接改 prompt；prompt caching）+ 每手注入对手画像与最近几手；`HandSession` 每次决策发一条本手完整记录（`手牌 #n`、当前手牌，紧跟未弃牌对手的本局统计画像块，再逐街逐动作 `位置[用户名] 动作，剩余 xBB`、BB 单位快照（翻后含 `SPR`=双方剩余较小者÷有效底池），结尾“现在根据用户行为、画像和相关数据进行决策行动”），本局统计由 `opp_stats()` 从已结束的手算出、`walk()` 算剩余筹码；手结束写结果摘要；`find_profile` 取画像（本桌 `<opp>.md` 优先，其次库里最近一份）；`ProfileUpdater` 每 N 手异步更新本桌 `<opp>.md` | 改 session 模式 prompt/画像接入 |
-| `tools/preflop_rank.json` | 169 种起手牌单挑胜率与排名百分位（`tools/make_preflop_rank.py` 生成），`state.preflop_rank()` 读，状态里显示「起手牌 前X%」 | 翻前范围 |
+| `tools/preflop_rank.json` | 169 种起手牌单挑胜率与排名百分位（`tools/make_preflop_rank.py` 生成）+ `vs` 对前 5/10/20/35/50% 范围的胜率（`make_preflop_rank.py --vs` 生成，8 进程约 5 分钟），`state.preflop_rank()` 读，状态里显示「起手牌 前X%」；翻前面对大注（>5BB）时 `state.big_range()` 按加注层级/大小估对手范围（4bet+ 前5%、3bet 前10%、开局大注按 BB 前50%~10%），`vs_big_eq()` 查表给「翻前面对大注 对其范围(约前X%)胜率」，规则与 short/session 三处共用 | 翻前范围 |
 | `tools/state.py` | 截图 → 文字状态（常驻 OCR 进程 `_OCRServer` + 模板识牌，parse≈0.2s），含 `facts`/`made_desc`（听牌含去重“合计 N outs”）/`draw_outs`/`draw_eq`/`draw_line`（精确听牌胜率）/`preset_off`/`usable_presets`（灰档识别）/`HandHist`（换街用底池增量校正“下注到 ?”） | 机器人识别问题 |
 | `tools/ocr.swift` → `tools/ocr` | macOS Vision OCR；`serve` 常驻模式；改完 `cd tools && swiftc -O ocr.swift -o ocr` | 识别底层 |
 | `tools/bench_llm.py` | 模型延迟基准（新建连接 vs 长连接） | 查模型慢 |
@@ -166,7 +166,7 @@ python3 tools/players.py list | show <opp> | hands <opp> [--table X] | hand <hid
 - `tables/20261029_wepoker_practice/`：HU 单挑练习局，对手 `little00`；`hands.jsonl` 有 56 手（2026-10-30 从回放导入，无模型对话引用），本桌画像 `little00.md` 还没生成（真机跑满 `--profile-every` 手后自动生成）。
 - short 模式的 `TPROMPT` 是写死的通用单挑策略，不读画像；**session 模式**会读本桌 `tables/<桌>/<opp>.md` 注入 system（本桌没有时用库里该对手最近一份画像作先验；都没有按基线打）。画像自动更新只基于代码记录的行动线与盈亏，看不到对手亮牌（parse 尚未识别摊牌），需要时仍按工作流 C 手动补。
 - `adb_act.sh` 的坐标来自早期截图，部分没验证过；`tools/act.py` 每次按 OCR 定位，更可靠。
-- 2026-10-30 修复（commit 见 `git log`）：灰档预设误点（“我方下注到 ?”）、`rule_decide` 危险牌面（四同花/一张成顺/三同花/大公共对）两对·顶对降级、rule_decide 强弱判断只看成牌行（原来听牌行的“顺子听牌”字样会把纯顺听当成顺子强牌）、组合听牌 outs 去重与精确胜率（004552 Td8d@KdQd9h=12 outs 到河 45%）、hedge 3.8→3.0、`--preflop-rule`（默认开）、live 帧滚动清理。真机 100 手复测尚未做（需用户明确要求再跑）。
+- 2026-10-30 修复（commit 见 `git log`）：灰档预设误点（“我方下注到 ?”）、`rule_decide` 危险牌面（四同花/一张成顺/三同花/大公共对）两对·顶对降级、rule_decide 强弱判断只看成牌行（原来听牌行的“顺子听牌”字样会把纯顺听当成顺子强牌）、组合听牌 outs 去重与精确胜率（004552 Td8d@KdQd9h=12 outs 到河 45%）、hedge 3.8→3.0、`--preflop-rule`（默认开）、live 帧滚动清理。真机 100 手复测尚未做（需用户明确要求再跑）。之后（模型评测发现）：翻前面对 4bet 时 A5o 被估“46% 够跟”→ 改为按范围宽度查表；四同花公共牌上只用一张小牌成的同花（`_flush_beaten` ≥2 张更大同花色牌未现）在规则里降为中等牌。
 - 文档中的范围和统计参考值按 6max 100BB 现金局给出；单挑、锦标赛、短码要另行调整（单挑基线：BTN 开约 80%，BB 防守 50–60%+）。
 
 ---

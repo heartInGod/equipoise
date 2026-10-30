@@ -479,8 +479,8 @@ def snapshot_bb(st, hist):
         need = tc / ((pot or 0) + tc) * 100
         L.append(f"需跟注 {bb(tc)}BB，所需胜率 {need:.0f}%" + ("（跟注即全下）" if ms is not None and tc >= ms else ""))
         if pr and tc > 10:
-            e = wpstate.vs_big_eq(pr[1]["eq"])
-            L.append(f"翻前面对大注 对其范围胜率约 {e:.0f}% {'≥' if e >= need else '<'} 所需 {need:.0f}%（{'够跟' if e >= need else '不够'}）")
+            lv = hist.level if hist is not None and getattr(hist, "street", None) == "翻前" else 2
+            L.append(wpstate.big_line(pr[1], need, lv, (n.get("opp_bet") or 0) / 2))
     if md and len(board) in (3, 4):
         L.extend(wpstate.draw_line(md[-1], len(board)))
     opts = []

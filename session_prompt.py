@@ -6,10 +6,11 @@
 - 动态块：每手开始时刷新一次（对手画像 <opp>.md + 最近几手结果摘要），手内不变。
 - messages：只有一条 user。每次决策发本手完整记录（手牌编号、当前手牌、未弃牌对手画像、逐个动作：位置[用户名] 动作，剩余 BB）
   + 当前局面快照；不带之前的模型回复（我方动作已在行动线里），每次都以代码记录和当前帧为准。
-- 手结束（检测到新手牌）时生成结果摘要（行动线、盈亏、结束方式），写 <table>/bot_hands.jsonl，
+- 手结束（检测到新手牌）时生成结果摘要（行动线、盈亏、结束方式）。后台线程把这一手写进对局流水 hands/YYYY-MM.jsonl
+  （所有桌/对手一份，每手一行，含逐动作明细，hid 唯一），模型对话另写 logs/<日期>/msgs.jsonl（同一个 hid，流水里 msgs 字段指向该文件），
   并可触发 ProfileUpdater 异步更新画像（不在决策路径上，不受倒计时约束）。
 """
-import json, queue, re, threading, time
+import json, os, queue, re, secrets, threading, time
 from pathlib import Path
 
 import state as wpstate
@@ -95,7 +96,8 @@ def _table_brief(table_dir):
 
 
 ROOT = Path(__file__).resolve().parent
-PLAYERS = ROOT / "players"          # 跨桌对手库：players/<opp>.md 全局画像，players/<opp>/hands.jsonl 导入的历史手
+PLAYERS = ROOT / "players"          # 跨桌对手库：players/<opp>.md 全局画像，players/opponents.db 计数器
+HANDS = ROOT / "hands"              # 对局流水：hands/YYYY-MM.jsonl，所有真机手 + 导入的回放手（对手库重建的唯一来源）
 TABLES = ROOT / "tables"
 HIST_LIMIT = 1000                   # 热启动最多载入最近多少手
 COLD_N = 30                         # 对手累计少于这么多手时附“群体参考”
@@ -121,7 +123,7 @@ def display_name(raw, known=()):
 def known_names(tables=None, players=None):
     """对手库里出现过的昵称（画像文件名 + 手牌记录里的 opp）"""
     names = {p.stem for p in Path(players or PLAYERS).glob("*.md")}
-    names |= {h.get("opp") for h in load_hands(limit=0, tables=tables, players=players) if h.get("opp")}
+    names |= {h.get("opp") for h in load_hands(limit=0) if h.get("opp")}
     return sorted(names)
 
 
@@ -138,9 +140,16 @@ def hand_key(h):
     return json.dumps([h.get("pos"), h.get("hero"), h.get("board"), h.get("ev")], ensure_ascii=False)
 
 
-def _hand_files(tables=None, players=None):
-    """对手明细 jsonl：players/<opp>/hands.jsonl（真机每手 + 导入的回放手），只用于重建对手库 / 无库时兜底"""
-    return sorted(Path(players or PLAYERS).glob("*/hands.jsonl"))
+def _hand_files(hands=None):
+    """对局流水 hands/*.jsonl（真机每手 + 导入的回放手），只用于重建对手库 / 无库时兜底 / 按 hid 查手"""
+    return sorted(Path(hands or HANDS).glob("*.jsonl"))
+
+
+def rel(p):
+    """路径 -> 相对仓库根的字符串（不在仓库里就用绝对路径）"""
+    p = Path(os.fspath(p)).resolve()
+    try: return str(p.relative_to(ROOT))
+    except ValueError: return str(p)
 
 
 def _profile_files(tables=None, players=None):
@@ -149,11 +158,11 @@ def _profile_files(tables=None, players=None):
     return [f for f in fs if f.name not in ("table.md", "README.md") and not f.name.startswith("_")]
 
 
-def load_hands(opp=None, exclude=None, tables=None, players=None, limit=HIST_LIMIT):
-    """跨桌读对手明细（players/*/hands.jsonl），去重后按时间升序取最近 limit 手。
+def load_hands(opp=None, exclude=None, hands=None, limit=HIST_LIMIT):
+    """跨桌读对局流水（hands/*.jsonl），去重后按时间升序取最近 limit 手。
     opp 给定时只要该对手；exclude 给定时排除该对手（算群体参考）。"""
     seen, out = set(), []
-    for f in _hand_files(tables, players):
+    for f in _hand_files(hands):
         for l in f.read_text(encoding="utf-8").splitlines():
             try: h = json.loads(l)
             except ValueError: continue
@@ -161,7 +170,7 @@ def load_hands(opp=None, exclude=None, tables=None, players=None, limit=HIST_LIM
             if (opp is not None and not same_opp(o, opp)) or (exclude is not None and same_opp(o, exclude)): continue
             k = hand_key(h)
             if k in seen: continue
-            seen.add(k); out.append({k2: h.get(k2) for k2 in ("t", "n", "opp", "pos", "hero", "board", "ev", "how", "delta")})
+            seen.add(k); out.append({k2: h.get(k2) for k2 in ("hid", "t", "n", "opp", "pos", "hero", "board", "ev", "how", "delta")})
     out.sort(key=lambda h: h.get("t") or "")
     return out[-limit:] if limit else out
 
@@ -404,8 +413,9 @@ def walk(ev, hero_pos):
 ACT = (("弃牌", "fold"), ("让牌", "check"), ("平跟", "limp"), ("跟注", "call"), ("全下", "allin"), ("加注", "raise"), ("下注", "bet"))
 
 
-def hand_detail(rec, table=None):
-    """一手的明细（写 players/<opp>/hands.jsonl）：原始记录（重建统计用）+ 逐个动作的位置/类型/注码（BB）。
+def hand_detail(rec, table=None, msgs=None):
+    """一手的对局流水记录（写 hands/YYYY-MM.jsonl）：hid + 原始记录（重建统计用）+ 逐个动作的位置/类型/注码（BB）；
+    msgs=该手模型对话所在文件（logs/<日期>/msgs.jsonl，按 hid 关联）。
     acts[i] = {st 街, who me/opp, pos BTN/BB, act fold/check/limp/call/bet/raise/allin, add 本次投入, to 本街累计到,
                pot 动作前底池, left 动作后剩余筹码（起始筹码未知时为 None）}"""
     pos = rec.get("pos")
@@ -422,10 +432,12 @@ def hand_detail(rec, table=None):
                      "pot": round((last["me"] + last["opp"]) / 2, 1),
                      "left": None if start.get(who) is None else round(max(start[who] - tot, 0) / 2, 1)})
         last[who] = max(last[who], tot)
-    d = {k: rec.get(k) for k in ("t", "n", "opp", "pos", "hero", "board", "ev", "how", "delta")}
-    if table: d["table"] = table
+    d = {k: rec.get(k) for k in ("hid", "t", "n", "opp", "pos", "hero", "board", "ev", "how", "delta")}
+    if table or rec.get("table"): d["table"] = table or rec.get("table")
     if start: d["start_bb"] = {k: round(v / 2, 1) for k, v in start.items() if v is not None}
     d["acts"] = acts
+    if msgs: d["msgs"] = msgs
+    if rec.get("src"): d["src"] = rec["src"]
     return d
 
 
@@ -477,16 +489,19 @@ class HandSession:
     """维护 session 模式的请求。build() 生成本次请求（本手完整记录，单条 user）；commit() 记下模型回复。"""
     def __init__(self, table_dir=None, opp=None, keep_hands=6, hands_log=None, on_hand_end=None, hero_name=None,
                  history=None, population=None, warm=False, votes=3, log=print, store=None, store_write=False, hist_stats=None,
-                 players_dir=None):
+                 hands_dir=None, msgs_log=None):
         """history=该对手此前（跨桌）已结束的手 / hist_stats=其累计统计计数，热启动；population=其他对手的手，对手样本少时作群体参考（冷启动）。
         对手昵称由 see_opp() 从截图识别（多帧投票），识别到/换人后 warm=True 时后台加载该对手跨桌历史，下一手开始生效；
         opp 参数只是初始值（可为 None）。
-        store=对手库 OppDB：有它时历史统计/画像/群体参考按主键查库；store_write=True（仅真机）时每手把明细追加到
-        players_dir/<opp>/hands.jsonl，并把这一手的计数直接加进库（不读 jsonl）。"""
+        每手记录：hands_log=固定文件（回放/测试）或 hands_dir=按月滚动的流水目录（真机：hands/YYYY-MM.jsonl）；
+        msgs_log=模型对话文件（按 hid 关联，流水里 msgs 字段记它的路径）。
+        store=对手库 OppDB：有它时历史统计/画像/群体参考按主键查库；store_write=True（仅真机）时每手把计数直接加进库（不读 jsonl）。"""
         self.table_dir, self.opp, self.keep = table_dir, opp, keep_hands
         self.hist_S = hist_stats or (opp_stats(history) if history else None)
         self.prof = None                     # 对手库里的画像 {"profile","ptype"}
-        self.store, self.store_write, self.players_dir = store, store_write, players_dir
+        self.store, self.store_write = store, store_write
+        self.hands_dir, self.msgs_log = hands_dir, msgs_log
+        self.sid = time.strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(2)      # 本次运行的 id；hid = sid-手序号
         self.pop = opp_stats(population) if population else (store.pop(opp) if store and warm else None)
         self.warm, self.need_votes, self.log = warm, votes, log
         self._votes, self._pending, self._loading, self._thread = [], None, None, None
@@ -570,17 +585,20 @@ class HandSession:
             finally: self._wq.task_done()
 
     def _write(self, rec):
-        if self.hands_log:
-            Path(self.hands_log).parent.mkdir(parents=True, exist_ok=True)
-            with open(self.hands_log, "a") as f: f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-        if self.store_write and rec.get("opp"):
-            d = Path(self.players_dir or PLAYERS) / safe_name(rec["opp"])
-            d.mkdir(parents=True, exist_ok=True)
+        msgs = None
+        if self.msgs_log is not None and rec.get("msgs"):                  # 模型对话单独存，按 hid 关联
+            p = Path(os.fspath(self.msgs_log)); p.parent.mkdir(parents=True, exist_ok=True)
+            with open(p, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"hid": rec.get("hid"), "t": rec.get("t"), "opp": rec.get("opp"), "msgs": rec["msgs"]}, ensure_ascii=False) + "\n")
+            msgs = rel(p)
+        p = self.hands_log or (Path(self.hands_dir) / f"{(rec.get('t') or time.strftime('%Y-%m'))[:7]}.jsonl" if self.hands_dir else None)
+        if p:
+            p = Path(os.fspath(p)); p.parent.mkdir(parents=True, exist_ok=True)
             tb = Path(self.table_dir).name if self.table_dir else None
-            with open(d / "hands.jsonl", "a", encoding="utf-8") as f: f.write(json.dumps(hand_detail(rec, tb), ensure_ascii=False) + "\n")
-            if self.store is not None:
-                try: self.store.add_hands([rec])        # 这一手的计数直接加到该对手那一行（UPDATE n=n+1, vp=vp+…）
-                except Exception as e: self.log(f"[session] 写对手库失败: {type(e).__name__}: {e}")
+            with open(p, "a", encoding="utf-8") as f: f.write(json.dumps(hand_detail(rec, tb, msgs), ensure_ascii=False) + "\n")
+        if self.store is not None and self.store_write and rec.get("opp"):
+            try: self.store.add_hands([rec])            # 这一手的计数直接加到该对手那一行（UPDATE n=n+1, vp=vp+…）
+            except Exception as e: self.log(f"[session] 写对手库失败: {type(e).__name__}: {e}")
         if self.on_hand_end:
             try: self.on_hand_end(rec, self)
             except Exception: pass
@@ -589,7 +607,9 @@ class HandSession:
             if d and d.get("profile"): self._prof_new = (d["name"], {"profile": d["profile"], "ptype": d["ptype"]})
 
     def flush(self):
-        """等后台写完（退出前 / 测试用）"""
+        """等后台写完（退出前 / 测试用）；对手一直没识别出来的手也写进流水（opp=null，不计入对手库）"""
+        for rec in self._unwritten: self._emit(rec)
+        self._unwritten = []
         self._wq.join()
 
     def _refresh_prof(self):
@@ -671,7 +691,7 @@ class HandSession:
                 + f" | {how}，我方 {'?' if delta is None else ('+' if delta > 0 else '') + bb(delta)}BB")
         if delta is not None and abs(delta) > 400: line += "（变化过大，可能有补码或漏观察的手）"
         self.recent.append(line)
-        rec = {"t": time.strftime("%Y-%m-%d %H:%M:%S"), "n": self.n_hands, "opp": self.opp, "pos": c["pos"], "hero": c["hero"],
+        rec = {"hid": f"{self.sid}-{self.n_hands:04d}", "t": time.strftime("%Y-%m-%d %H:%M:%S"), "n": self.n_hands, "opp": self.opp, "pos": c["pos"], "hero": c["hero"],
                "board": c["board"], "ev": ev, "how": how, "delta": delta, "start": dict(c.get("start") or {}), "msgs": self.msgs}
         self.hands.append(rec)
         if self.opp is None: self._unwritten.append(rec)       # 对手未识别：等识别出来再写（补上 opp）

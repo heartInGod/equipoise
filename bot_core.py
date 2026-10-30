@@ -645,13 +645,15 @@ class Bot:
 
 # ======================= 运行 =======================
 def make_session(a, model=None, live=False):
-    """--prompt session 时构造 HandSession；真机模式写 <table>/bot_hands.jsonl（含模型对话）+ players/<opp>/hands.jsonl（明细），
-    计数直接加进对手库，并按 --profile-every 异步更新画像"""
+    """--prompt session 时构造 HandSession。真机：每手写对局流水 hands/YYYY-MM.jsonl + 模型对话 logs/<日期>/msgs.jsonl（hid 关联），
+    计数直接加进对手库，并按 --profile-every 异步更新画像；回放：流水/对话写 logs/<日期>/hands__*.jsonl、msgs__*.jsonl，不写库"""
     if getattr(a, "prompt", None) != "session": return None
-    from session_prompt import HandSession, ProfileUpdater
+    from session_prompt import HandSession, ProfileUpdater, HANDS
     tdir = ROOT / a.table if getattr(a, "table", None) else None
     opp = getattr(a, "opp", None)
-    hl = (tdir / "bot_hands.jsonl") if live and tdir else logroll.path(f"hands__{time.strftime('%m%d_%H%M')}.jsonl")
+    ts = time.strftime('%m%d_%H%M')
+    hl = None if live else logroll.path(f"hands__{ts}.jsonl")
+    ml = logroll.DailyPath("msgs.jsonl") if live else logroll.path(f"msgs__{ts}.jsonl")
     warm = getattr(a, "warm", None)
     warm = live if warm is None else warm          # 真机默认热启动；回放默认不载入（历史里可能就有被回放的手）
     # 对手昵称从截图识别（Bot.handle -> sess.see_opp），识别到/换人后查库取其跨桌统计+画像，下一手生效；--opp 只是可选初值
@@ -666,7 +668,8 @@ def make_session(a, model=None, live=False):
         except Exception as e:
             print(f"[oppdb] 打开失败，退回扫 jsonl: {type(e).__name__}: {e}", flush=True)
     upd = ProfileUpdater(model, tdir, opp, every=a.profile_every, store=store) if live and model and tdir and a.profile_every > 0 else None
-    return HandSession(tdir, opp, hands_log=hl, on_hand_end=upd, warm=warm, store=store, store_write=live and tdir is not None,
+    return HandSession(tdir, opp, hands_log=hl, hands_dir=HANDS if live else None, msgs_log=ml, on_hand_end=upd, warm=warm,
+                       store=store, store_write=live,
                        log=lambda m: print(m, flush=True))
 
 

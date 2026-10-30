@@ -603,14 +603,14 @@ class TestSession(unittest.TestCase):
         """热启动：对手在别的桌的历史手并入统计；冷启动：新对手给群体参考；同一手多次记录只算一次"""
         P = self.P
         root = Path(self.tmp); tables, players = root / "tables", root / "players"
-        (players / "villain").mkdir(parents=True)
+        hands = root / "hands"; hands.mkdir(parents=True)
         h_open = {"t": "2026-10-29 10:00:00", "opp": "villain", "pos": "BB", "hero": ["7c", "2d"], "board": [],
                   "ev": [["翻前", "对手开局加注到 4"], ["翻前", "我方弃牌"]], "how": "我方弃牌", "delta": -2}
         rows = [dict(h_open, hero=[f"{r}c", "2d"]) for r in "3456789"] + [dict(h_open, hero=["3c", "2d"], t="x")]   # 最后一条与第一条重复
         rows.append(dict(h_open, opp="other"))
-        (players / "villain" / "hands.jsonl").write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
-        hist = P.load_hands("villain", tables=tables, players=players)
-        pop = P.load_hands(exclude="villain", tables=tables, players=players)
+        (hands / "2026-10.jsonl").write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
+        hist = P.load_hands("villain", hands=hands)
+        pop = P.load_hands(exclude="villain", hands=hands)
         self.assertEqual(len(hist), 7); self.assertEqual(len(pop), 1)
         sess = P.HandSession(None, "villain", history=hist, population=pop)
         req, u = sess.build(self.pre(), S.HandHist())
@@ -637,12 +637,12 @@ class TestSession(unittest.TestCase):
         """不靠 --opp：截图读到昵称（多帧投票、容忍 0/O）→ 后台加载跨桌历史 → 下一手生效；之前的手补上昵称再写；换人重置本局统计"""
         P = self.P
         root = Path(self.tmp); tables, players = root / "tables", root / "players"
-        (players / "little00").mkdir(parents=True)
+        hands = root / "hands"; hands.mkdir(parents=True)
         h = {"t": "2026-10-29 10:00:00", "opp": "little00", "pos": "BB", "hero": ["7c", "2d"], "board": [],
              "ev": [["翻前", "对手开局加注到 4"], ["翻前", "我方弃牌"]], "how": "我方弃牌", "delta": -2}
-        (players / "little00" / "hands.jsonl").write_text("".join(json.dumps(dict(h, hero=[f"{r}c", "2d"]), ensure_ascii=False) + "\n" for r in "3456789"))
-        old = P.TABLES, P.PLAYERS
-        P.TABLES, P.PLAYERS = tables, players
+        (hands / "2026-10.jsonl").write_text("".join(json.dumps(dict(h, hero=[f"{r}c", "2d"]), ensure_ascii=False) + "\n" for r in "3456789"))
+        old = P.TABLES, P.PLAYERS, P.HANDS
+        P.TABLES, P.PLAYERS, P.HANDS = tables, players, hands
         try:
             logs = []
             sess = P.HandSession(None, None, hands_log=self.log, warm=True, log=logs.append)
@@ -668,7 +668,18 @@ class TestSession(unittest.TestCase):
             self.assertEqual(sess.opp, "NewGuy"); self.assertEqual(sess.n_hist, 0); self.assertEqual(sess.hands, [])
             self.assertIn("当前对手：NewGuy", sess.static)
         finally:
-            P.TABLES, P.PLAYERS = old
+            P.TABLES, P.PLAYERS, P.HANDS = old
+
+    def test_unknown_opp_hands_written_on_flush(self):
+        """对手一直没识别出来：退出 flush 时这些手照样写进流水（opp=null），不计入对手库"""
+        import oppdb
+        db = oppdb.OppDB(Path(self.tmp) / "o.db")
+        sess = self.P.HandSession(None, None, hands_log=self.log, store=db, store_write=True, log=lambda m: None)
+        sess.build(self.pre(), S.HandHist()); sess.build(self.pre(hero=("7c", "2d"), stack=209), S.HandHist())
+        sess.flush()
+        recs = [json.loads(l) for l in self.log.read_text().splitlines()]
+        self.assertEqual([(r["opp"], r["hero"]) for r in recs], [(None, ["Ah", "Kd"])]); self.assertTrue(recs[0]["hid"])
+        self.assertEqual(db.counts(), (0, 0)); db.close()
 
     def test_hand_write_is_async(self):
         """每手记录（jsonl/对手库/画像回调）在后台线程写，写慢也不阻塞主线程出下一手的请求"""
@@ -811,12 +822,12 @@ class TestOppDB(unittest.TestCase):
         P = self.P
         self.db.add_hands([self.h("little00", i) for i in range(5)] + [self.h("other", i) for i in range(6)])
         g = self.tmp / "little00.md"; g.write_text("# 画像\n- 类型：跟注站\n库里的画像\n"); self.db.sync_profiles([g])
-        log = self.tmp / "tables" / "t1" / "bot_hands.jsonl"
-        sess = P.HandSession(None, None, warm=True, store=self.db, store_write=True, hands_log=log, log=lambda m: None,
-                             players_dir=self.tmp / "players")
+        hd, ml = self.tmp / "hands", self.tmp / "logs" / "msgs.jsonl"
+        sess = P.HandSession(None, None, warm=True, store=self.db, store_write=True, hands_dir=hd, msgs_log=ml, log=lambda m: None)
         self.assertEqual(sess.pop["n"], 11)                                      # 未识别前用全体做群体参考
         _, u = sess.build(self.pre(), S.HandHist())
         self.assertIn("群体参考（其他对手共11手", u)
+        sess.commit(u, {"action": "跟注"})                                       # 这手有一次模型决策
         for _ in range(3): sess.see_opp("little0O")
         sess._thread.join()
         req, u = sess.build(self.pre(hero=("7c", "2d"), stack=209), S.HandHist())
@@ -825,9 +836,13 @@ class TestOppDB(unittest.TestCase):
         self.assertIn("简述：跟注站", u); self.assertIn("库里的画像", req["system"][1]["text"])
         sess.flush()
         self.assertEqual(self.db.lookup("little00")["n_hands"], 6)               # 识别前结束的那手补上昵称，计数直接加进库
-        det = [json.loads(l) for l in (self.tmp / "players" / "little00" / "hands.jsonl").read_text().splitlines()]
-        self.assertEqual(len(det), 1); self.assertIn("acts", det[0]); self.assertNotIn("msgs", det[0])   # 对手明细（含逐个动作）
-        self.assertIn("msgs", json.loads(log.read_text().splitlines()[0]))           # 桌内记录保留模型对话
+        fs = list(hd.glob("*.jsonl")); self.assertEqual(len(fs), 1); self.assertRegex(fs[0].name, r"^\d{4}-\d{2}\.jsonl$")   # 按月的流水
+        det = [json.loads(l) for l in fs[0].read_text().splitlines()]
+        self.assertEqual(len(det), 1); self.assertIn("acts", det[0]); self.assertEqual(det[0]["opp"], "little00")
+        self.assertRegex(det[0]["hid"], r"^\d{8}-\d{6}-[0-9a-f]{4}-0001$")
+        m = [json.loads(l) for l in ml.read_text().splitlines()]                    # 对话单独存，按 hid 双向关联
+        self.assertEqual((len(m), m[0]["hid"]), (1, det[0]["hid"])); self.assertTrue(m[0]["msgs"])
+        self.assertEqual(Path(det[0]["msgs"]).resolve() if Path(det[0]["msgs"]).is_absolute() else P.ROOT / det[0]["msgs"], ml.resolve())
 
     def pre(self, hero=("Ah", "Kd"), stack=199):
         return mk(hero=hero, buttons={"弃牌": FOLD, "跟注": CHECK, "加注": RAISE},

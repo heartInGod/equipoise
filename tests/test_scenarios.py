@@ -85,6 +85,14 @@ class TestGoldenFrames(unittest.TestCase):
         for _ in range(5): S.parse(str(f))
         self.assertLess((time.time() - t) / 5, 0.6, "parse 应 <0.6s（常驻 OCR）")
 
+    def test_opp_name_from_screen(self):
+        """顶部中央座位的对手昵称（OCR 常把 0 读成 O）；对手行动标签盖住名字时读不到，不误报"""
+        names = {f: S.parse(str(ROOT / f"model_test/live/{f}.raw")).get("opp_name") for f in ("000010_001_other", "000016_003_my_turn")}
+        self.assertEqual(S.name_key(names["000010_001_other"]), S.name_key("little00"))
+        self.assertIsNone(names["000016_003_my_turn"])                     # 该帧名字位置是“跟注”标签
+        self.assertIsNone(S.opp_name({"texts": [["加注", 720, 416], ["+14", 720, 430], ["密码局", 700, 400]]}))
+        self.assertEqual(S.opp_name({"texts": [["牌桌大王", 720, 416]]}), "牌桌大王")
+
     def test_grey_preset_detected(self):
         """真实帧：底池 4 时 1/3=1 是灰档；002620 整体偏暗但 5 档都可用；001202 只有 1/3 可用"""
         cases = {"000019_005_my_turn": [True, False, False, False, False], "002620_my_turn": [False] * 5,
@@ -624,6 +632,43 @@ class TestSession(unittest.TestCase):
         os.utime(g, (2e9, 2e9)); self.assertEqual(P.profile_path(tdir, "vil lain", players), g)
         self.assertEqual(P.profile_path(root / "nope", "vil lain", players), g)    # 换桌后仍能找到全局画像
         self.assertIsNone(P.profile_path(tdir, "nobody", players))
+
+    def test_detect_opp_async_and_switch(self):
+        """不靠 --opp：截图读到昵称（多帧投票、容忍 0/O）→ 后台加载跨桌历史 → 下一手生效；之前的手补上昵称再写；换人重置本局统计"""
+        P = self.P
+        root = Path(self.tmp); tables, players = root / "tables", root / "players"
+        (players / "little00").mkdir(parents=True)
+        h = {"t": "2026-10-29 10:00:00", "opp": "little00", "pos": "BB", "hero": ["7c", "2d"], "board": [],
+             "ev": [["翻前", "对手开局加注到 4"], ["翻前", "我方弃牌"]], "how": "我方弃牌", "delta": -2}
+        (players / "little00" / "hands.jsonl").write_text("".join(json.dumps(dict(h, hero=[f"{r}c", "2d"]), ensure_ascii=False) + "\n" for r in "3456789"))
+        old = P.TABLES, P.PLAYERS
+        P.TABLES, P.PLAYERS = tables, players
+        try:
+            logs = []
+            sess = P.HandSession(None, None, hands_log=self.log, warm=True, log=logs.append)
+            b, io = bot(C.Decider(seq_model((0, OK_CALL))), prompt="session", session=sess)
+            st = self.pre(); st["opp_name"] = "little0O"
+            b.handle("x", st, 100)                                          # 第 1 手：只读到 1 次，未确认
+            self.assertIsNone(sess.opp); self.assertIsNone(sess._thread)
+            for _ in range(2): sess.see_opp("little0O")
+            sess._thread.join(2)
+            self.assertEqual(sess._pending[0], "little00")                  # 对手库里已有同键名字，用它显示
+            self.assertIsNone(sess.opp)                                     # 手内不切换
+            st2 = self.pre(hero=("7c", "2d"), stack=209); st2["opp_name"] = "little00"
+            b.handle("x", st2, 130)                                         # 第 2 手开始：生效
+            self.assertEqual(sess.opp, "little00"); self.assertEqual(len(sess.history), 7)
+            self.assertIn("此前7+本局1", sess.user_text(st2, b.hist))
+            recs = [json.loads(l) for l in self.log.read_text().splitlines()]
+            self.assertEqual([r["opp"] for r in recs], ["little00"])         # 识别前结束的第 1 手补写
+            self.assertIn("当前对手：little00", sess.static)
+            self.assertTrue(any("识别到对手 little00" in m for m in logs))
+            for _ in range(3): sess.see_opp("NewGuy")                       # 换人
+            sess._thread.join(2)
+            b.handle("x", self.pre(hero=("9c", "9d"), stack=199), 160)
+            self.assertEqual(sess.opp, "NewGuy"); self.assertEqual(sess.history, []); self.assertEqual(sess.hands, [])
+            self.assertIn("当前对手：NewGuy", sess.static)
+        finally:
+            P.TABLES, P.PLAYERS = old
 
     def test_flatten_for_generic(self):
         req, _ = self.sess.build(self.pre(), S.HandHist())

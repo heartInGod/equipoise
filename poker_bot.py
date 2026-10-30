@@ -249,7 +249,7 @@ if __name__ == "__main__":
     p4.add_argument("--prompt", choices=["short", "long", "session"], default="short",
                     help="决策 prompt：short=精简(默认) long=旧版完整 session=开局长system(缓存)+对手画像+手内多轮短消息")
     p4.add_argument("--table", default="tables/20261029_wepoker_practice", help="session 模式：桌目录（读 table.md / <opp>.md）")
-    p4.add_argument("--opp", default="little00", help="session 模式：对手昵称（画像文件名）")
+    p4.add_argument("--opp", default=None, help="session 模式：对手昵称初值（可选；默认从截图识别，桌上换人自动切换）")
     p4.add_argument("--warm", action=argparse.BooleanOptionalAction, default=None,
                     help="session 模式：载入该对手跨桌历史手（热启动）+ 其他对手群体参考（冷启动）。默认真机开、回放关")
     p4.add_argument("--profile-every", type=int, default=10, help="session 真机模式：每 N 手异步更新一次对手画像，0=不更新")

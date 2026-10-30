@@ -24,7 +24,7 @@ description: 德州扑克（无限注 NLH）职业牌手助手 + WePoker 真机�
 | `tables/<table_id>/` | 每张桌：`table.md` + `player.log` + 每位玩家 `<user>.md` | 读写对局数据 |
 | `poker_bot.py` | 命令行入口（list / tprobe / tlive）、模型配置读取 `load_providers`、通用 `call_model` | 跑机器人 |
 | `bot_core.py` | 机器人核心：`TPROMPT`、`Bot.handle`（每帧状态机）、`execute` 动作映射、`rule_decide` 本地规则兜底、`Decider`（对冲请求+deadline）、`AnthropicKA` 长连接池、`Grabber` 后台截图、`AdbIO` 常驻 adb shell、`AsyncWriter` | 改策略/流程/延迟 |
-| `tests/test_scenarios.py` | 场景测试（90 例，不连手机不调模型）；场景清单 `tests/SCENARIOS.md`；golden 生成 `tests/make_golden.py` | 改代码后必跑 |
+| `tests/test_scenarios.py` | 场景测试（92 例，不连手机不调模型）；场景清单 `tests/SCENARIOS.md`；golden 生成 `tests/make_golden.py` | 改代码后必跑 |
 | `session_prompt.py` | `--prompt session`：`SYS_STATIC` 开局长 system（牌桌/规则/策略/偏移表 + `_reference()` 参考资料块：gto.md §8.1 单挑统计参考值/§6.2/§2.5/§2.6/§7、technology.md §2.4/§4.1/§4.2，改这些章节会直接改 prompt；prompt caching）+ 每手注入对手画像与最近几手；`HandSession` 每次决策发一条本手完整记录（`手牌 #n`、当前手牌，紧跟未弃牌对手的本局统计画像块，再逐街逐动作 `位置[用户名] 动作，剩余 xBB`、BB 单位快照（翻后含 `SPR`=双方剩余较小者÷有效底池），结尾“现在根据用户行为、画像和相关数据进行决策行动”），本局统计由 `opp_stats()` 从已结束的手算出、`walk()` 算剩余筹码；手结束写结果摘要；`ProfileUpdater` 每 N 手异步更新 `<opp>.md` | 改 session 模式 prompt/画像接入 |
 | `tools/preflop_rank.json` | 169 种起手牌单挑胜率与排名百分位（`tools/make_preflop_rank.py` 生成），`state.preflop_rank()` 读，状态里显示「起手牌 前X%」 | 翻前范围 |
 | `tools/state.py` | 截图 → 文字状态（常驻 OCR 进程 `_OCRServer` + 模板识牌，parse≈0.2s），含 `facts`/`made_desc`（听牌含去重“合计 N outs”）/`draw_outs`/`draw_eq`/`draw_line`（精确听牌胜率）/`preset_off`/`usable_presets`（灰档识别）/`HandHist`（换街用底池增量校正“下注到 ?”） | 机器人识别问题 |
@@ -127,7 +127,7 @@ python3 tools/players.py list | show <opp> | import logs/<日期>/hands__*.jsonl
 ```
 
 - **优先用文本模式 `tlive`**（本地识别 + 模型只做决策）。`probe/live` 是早期直接把图片丢给模型的模式，慢且不稳定。
-- 决策 prompt 在 `bot_core.py` 的 `TPROMPT`（精简版，约 600 字，状态由 `tools/state.py` 的 `brief_text()` 生成）；旧版完整 prompt 是 `TPROMPT_LONG` + `to_text()`，用 `tlive --prompt long` 切换；`tlive --prompt session --table tables/<桌> --opp <昵称> [--profile-every 10] [--warm/--no-warm]` 用开局长 system + 画像（跨桌热启动，见 §4） + 每次一条本手完整记录（真机模式把每手结果写 `tables/<桌>/bot_hands.jsonl`，每 N 手异步更新全局画像 `players/<opp>.md`，旧画像备份为 `.md.bak`；回放模式只写 `logs/<日期>/hands__*.jsonl`，不改画像），`to_text()` 仍用于人工查看（`tools/state.py`、`act.py look`）。改策略改 `TPROMPT`，改识别改 `state.py`，改流程改 `Bot.handle`；改完跑 `tests/test_scenarios.py`，识别有意改动用 `tests/make_golden.py --check` 看差异再刷新。
+- 决策 prompt 在 `bot_core.py` 的 `TPROMPT`（精简版，约 600 字，状态由 `tools/state.py` 的 `brief_text()` 生成）；旧版完整 prompt 是 `TPROMPT_LONG` + `to_text()`，用 `tlive --prompt long` 切换；`tlive --prompt session --table tables/<桌> [--opp <昵称初值,可选>] [--profile-every 10] [--warm/--no-warm]` 用开局长 system + 画像（跨桌热启动，见 §4） + 每次一条本手完整记录（真机模式把每手结果写 `tables/<桌>/bot_hands.jsonl`，每 N 手异步更新全局画像 `players/<opp>.md`，旧画像备份为 `.md.bak`；回放模式只写 `logs/<日期>/hands__*.jsonl`，不改画像），`to_text()` 仍用于人工查看（`tools/state.py`、`act.py look`）。改策略改 `TPROMPT`，改识别改 `state.py`，改流程改 `Bot.handle`；改完跑 `tests/test_scenarios.py`，识别有意改动用 `tests/make_golden.py --check` 看差异再刷新。
 - 延迟链路：Grabber 后台连续截图 → parse(0.2s) → 模型（长连接；3.0s 未返回发对冲请求（`--hedge`，默认 3.0）；截图后 `--budget` 8s 仍无结果用 `rule_decide`）→ 常驻 adb shell 发点击（不阻塞）。点击后开始于 busy_until+0.25s 之前的帧丢弃。
 - 识别出的画面类型：`my_turn`、`anim`、`runit`（全下后选发一次/两次）、`profile`、`away`、`can_start`、`need_sit`、`waiting`、`other`。
 - 无法处理的界面会存到 `model_test/unknown/` 并写入 `logs/<YYYY-MM-DD>/unknown.jsonl`，优化识别时先看这里。
@@ -136,6 +136,7 @@ python3 tools/players.py list | show <opp> | import logs/<日期>/hands__*.jsonl
   - 没有独立全下按钮：点加注 → 滑条拖到顶 → 点确定。跟对手全下直接点跟注。
   - 行动倒计时约 12–15 秒，超时自动让牌/弃牌，所以截图后 8 秒必须出决策（`--budget`）。
   - 加注滑条展开时整屏变暗，手牌读不出来：机器人沿用记忆的牌，若原决策就是加注则直接点确定。
+  - 单挑对手昵称在顶部中央 (720,416)，对手行动时被动作标签盖住；OCR 常把 0 读成 O（little00→little0O）。
   - 预设金额低于最小下注（如底池 4 时 1/3 池=1）该档变灰，读不到金额，点了等于让牌；按亮度判定（`state.preset_off`），机器人/`act.py raise` 跳过灰档，prompt 只列可用档。
 
 ### F. 复盘机器人表现
@@ -160,7 +161,7 @@ python3 tools/players.py list | show <opp> | import logs/<日期>/hands__*.jsonl
 
 ## 4. 已知现状与缺口
 
-- 对手画像热/冷启动：session 模式开局按昵称载入该对手跨桌历史（`--warm`，真机默认开、回放默认关，避免回放读到自己），手牌下方画像显示“累计N手(此前X+本局Y)”；对手累计 <30 手时附“群体参考”（其他对手汇总），全新对手描述为“按群体倾向小幅偏移”。对手识别只靠 `--opp` 昵称，桌上换人需手动指定。
+- 对手画像热/冷启动：session 模式开局按昵称载入该对手跨桌历史（`--warm`，真机默认开、回放默认关，避免回放读到自己），手牌下方画像显示“累计N手(此前X+本局Y)”；对手累计 <30 手时附“群体参考”（其他对手汇总），全新对手描述为“按群体倾向小幅偏移”。对手昵称**从截图自动识别**（`state.opp_name`：顶部中央 (720,416) 名字行；`name_key` 归一化容忍 0/O、l/1、空格/下划线），最近 8 帧里同一昵称 ≥3 次即确认，后台线程加载其跨桌历史+群体参考，**下一手开始生效**；对手未识别时结束的手先缓存，识别后补上昵称再写；桌上换人自动切换（本局统计/近况清空）。`--opp` 只是可选初值。
 - 机器人的对局只写到 `logs/`，**还没有自动写入** `tables/<table_id>/player.log` 和更新画像；目前需要按工作流 C 手动整理。
 - `tables/20261029_wepoker_practice/`：HU 单挑练习局，对手 `little00`。`player.log` 还没有手牌，座位表里引用的 `little00.md` 也还没建。
 - short/long 模式的 `TPROMPT` 是写死的通用单挑策略，不读画像；**session 模式**会读 `tables/<桌>/<opp>.md` 注入 system（没有画像时按基线打）。画像自动更新只基于代码记录的行动线与盈亏，看不到对手亮牌（parse 尚未识别摊牌），需要时仍按工作流 C 手动补。

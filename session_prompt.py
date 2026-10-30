@@ -106,12 +106,30 @@ def safe_name(opp):
     return re.sub(r"[^\w.-]", "_", opp or "").strip("._") or "unknown"
 
 
+def same_opp(a, b):
+    """两个昵称是否同一人（按 name_key 归一化，容忍 OCR 的 0/O、l/1 混淆）"""
+    return bool(a) and bool(b) and wpstate.name_key(a) == wpstate.name_key(b)
+
+
+def display_name(raw, known=()):
+    """OCR 原文 -> 显示用昵称：对手库里已有同键的名字就用它；否则把数字旁边的 O 改回 0"""
+    for k in known:
+        if same_opp(k, raw): return k
+    return re.sub(r"(?<=\d)[Oo]|[Oo](?=\d)", "0", raw.strip())
+
+
+def known_names(tables=None, players=None):
+    """对手库里出现过的昵称（画像文件名 + 手牌记录里的 opp）"""
+    names = {p.stem for p in Path(players or PLAYERS).glob("*.md")}
+    names |= {h.get("opp") for h in load_hands(limit=0, tables=tables, players=players) if h.get("opp")}
+    return sorted(names)
+
+
 def profile_path(table_dir, opp, players=None):
-    """对手画像文件：全局 players/<opp>.md 与桌内 <table>/<opp>.md 取较新的一份；都没有返回 None"""
+    """对手画像文件：全局 players/<opp>.md 与桌内 <table>/<opp>.md（文件名按 name_key 匹配）取较新的一份；都没有返回 None"""
     if not opp: return None
-    c = [Path(players or PLAYERS) / f"{safe_name(opp)}.md"]
-    if table_dir: c += [Path(table_dir) / f"{opp}.md", Path(table_dir) / f"{safe_name(opp)}.md"]
-    c = [p for p in c if p.exists()]
+    dirs = [Path(players or PLAYERS)] + ([Path(table_dir)] if table_dir and Path(table_dir).is_dir() else [])
+    c = [p for d in dirs if d.is_dir() for p in d.glob("*.md") if not p.name.endswith(".md.bak") and same_opp(p.stem, opp)]
     return max(c, key=lambda p: p.stat().st_mtime) if c else None
 
 
@@ -133,7 +151,7 @@ def load_hands(opp=None, exclude=None, tables=None, players=None, limit=HIST_LIM
             try: h = json.loads(l)
             except ValueError: continue
             o = h.get("opp")
-            if (opp is not None and o != opp) or (exclude is not None and o == exclude): continue
+            if (opp is not None and not same_opp(o, opp)) or (exclude is not None and same_opp(o, exclude)): continue
             k = hand_key(h)
             if k in seen: continue
             seen.add(k); out.append({k2: h.get(k2) for k2 in ("t", "n", "opp", "pos", "hero", "board", "ev", "how", "delta")})
@@ -346,13 +364,19 @@ def snapshot_bb(st, hist):
 class HandSession:
     """维护 session 模式的请求。build() 生成本次请求（本手完整记录，单条 user）；commit() 记下模型回复。"""
     def __init__(self, table_dir=None, opp=None, keep_hands=6, hands_log=None, on_hand_end=None, hero_name=None,
-                 history=None, population=None):
-        """history=该对手此前（跨桌）已结束的手，热启动统计；population=其他对手的手，对手样本少时作群体参考（冷启动）"""
+                 history=None, population=None, warm=False, votes=3, log=print):
+        """history=该对手此前（跨桌）已结束的手，热启动统计；population=其他对手的手，对手样本少时作群体参考（冷启动）。
+        对手昵称由 see_opp() 从截图识别（多帧投票），识别到/换人后 warm=True 时后台加载该对手跨桌历史，下一手开始生效；
+        opp 参数只是初始值（可为 None）。"""
         self.table_dir, self.opp, self.keep = table_dir, opp, keep_hands
         self.history = list(history or [])
         self.pop = opp_stats(population) if population else None
-        self.static = SYS_STATIC.format(exploit=_exploit_table(), reference=_reference(), table=_table_brief(table_dir) + (f"\n- 当前对手：{opp}" if opp else ""))
+        self.warm, self.need_votes, self.log = warm, votes, log
+        self._votes, self._pending, self._loading, self._thread = [], None, None, None
+        self._unwritten = []                 # 对手还没识别出来时结束的手，识别后补上 opp 再写
+        self._static()
         self.hands_log, self.on_hand_end = hands_log, on_hand_end
+        if opp and warm and history is None: self._start_load(opp)
         self.hero_name = hero_name or self._hero_name(table_dir)
         self.recent, self.hands = [], []     # 最近几手摘要（文本） / 本局已结束手的结构化记录（算统计）
         self.msgs, self.ev_ref = [], None
@@ -360,6 +384,60 @@ class HandSession:
         self._restat()
         self.dynamic = self._dyn()
         self.n_hands = 0
+
+    def _static(self):
+        self.static = SYS_STATIC.format(exploit=_exploit_table(), reference=_reference(),
+                                        table=_table_brief(self.table_dir) + (f"\n- 当前对手：{self.opp}" if self.opp else ""))
+
+    # ---- 对手识别 / 异步加载 ----
+    def see_opp(self, raw):
+        """每帧调用：raw=state.opp_name 读到的昵称原文。最近 8 次读数里同一个键 ≥votes 次且与当前对手不同 → 后台加载"""
+        if not raw: return
+        k = wpstate.name_key(raw)
+        self._votes = (self._votes + [(k, raw)])[-8:]
+        if sum(v[0] == k for v in self._votes) < self.need_votes: return
+        if same_opp(k, self.opp if self._pending is None else self._pending[0]) or same_opp(k, self._loading): return
+        raws = [r for kk, r in self._votes if kk == k]
+        self._start_load(max(set(raws), key=raws.count))
+
+    def _start_load(self, raw):
+        self._loading = raw
+        def run():
+            try:
+                name = display_name(raw, known_names()) if self.warm else display_name(raw)
+                hist = load_hands(name) if self.warm else []
+                pop = load_hands(exclude=name) if self.warm else []
+                self._pending = (name, hist, pop)
+            except Exception as e:
+                self.log(f"[session] 加载对手 {raw} 失败: {type(e).__name__}: {e}")
+                self._pending = (display_name(raw), [], [])
+            finally:
+                self._loading = None
+        self._thread = threading.Thread(target=run, daemon=True); self._thread.start()
+
+    def _apply_pending(self):
+        """手与手之间切换到识别出的对手：此前对手未知 → 已结束的手补上昵称；换了人 → 本局统计/近况清空"""
+        if self._pending is None: return
+        name, hist, pop = self._pending; self._pending = None
+        if same_opp(name, self.opp): self.opp = name; return
+        if self.opp is None:
+            for h in self.hands: h["opp"] = name
+        else:
+            self.hands, self.recent = [], []
+        self.opp, self.history = name, hist
+        self.pop = opp_stats(pop) if pop else None
+        self._static()
+        for rec in self._unwritten:
+            rec["opp"] = name; self._emit(rec)
+        self._unwritten = []
+        self.log(f"[session] 识别到对手 {name}：跨桌历史 {len(hist)} 手，群体参考 {len(pop)} 手")
+
+    def _emit(self, rec):
+        if self.hands_log:
+            with open(self.hands_log, "a") as f: f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        if self.on_hand_end:
+            try: self.on_hand_end(rec, self)
+            except Exception: pass
 
     def _restat(self):
         self.stats = opp_stats(self.history + self.hands)
@@ -432,11 +510,8 @@ class HandSession:
         rec = {"t": time.strftime("%Y-%m-%d %H:%M:%S"), "n": self.n_hands, "opp": self.opp, "pos": c["pos"], "hero": c["hero"],
                "board": c["board"], "ev": ev, "how": how, "delta": delta, "msgs": self.msgs}
         self.hands.append(rec)
-        if self.hands_log:
-            with open(self.hands_log, "a") as f: f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-        if self.on_hand_end:
-            try: self.on_hand_end(rec, self)
-            except Exception: pass
+        if self.opp is None: self._unwritten.append(rec)       # 对手未识别：等识别出来再写（补上 opp）
+        else: self._emit(rec)
 
     def user_text(self, st, hist):
         c, n = self.cur, st.get("nums") or {}
@@ -463,6 +538,7 @@ class HandSession:
         """返回 (请求 dict, 本条 user 文本)"""
         if hist.ev is not self.ev_ref:            # HandHist.reset() 会换新的 ev 列表 => 新的一手
             self._close(st)
+            self._apply_pending()
             self.n_hands += 1
             self.ev_ref, self.msgs = hist.ev, []
             self.cur = {"hero": list(st["hero"]), "board": [], "pos": hist.pos, "start_total": self._total(st), "ev": hist.ev, "start": {}}
@@ -516,17 +592,21 @@ class ProfileUpdater:
         self.buf, self.busy = [], False
 
     def __call__(self, rec, sess):
+        opp = rec.get("opp")
+        if not opp: return
+        if not same_opp(opp, self.opp): self.opp, self.buf = opp, []      # 换对手：缓冲清空，画像写到新对手
         self.buf.append({k: rec[k] for k in ("n", "t", "pos", "hero", "board", "ev", "how", "delta")})
         if self.every <= 0 or len(self.buf) < self.every or self.busy: return
         hands, self.buf, self.busy = self.buf, [], True
-        threading.Thread(target=self._run, args=(hands,), daemon=True).start()
+        threading.Thread(target=self._run, args=(hands, self.opp), daemon=True).start()
 
-    def _run(self, hands):
+    def _run(self, hands, opp=None):
+        opp = opp or self.opp
         try:
-            old = profile_path(self.dir, self.opp, self.players)           # 旧画像：全局或桌内较新的一份
-            p = self.players / f"{safe_name(self.opp)}.md"                  # 新画像统一写全局，换桌也能直接用
+            old = profile_path(self.dir, opp, self.players)           # 旧画像：全局或桌内较新的一份
+            p = self.players / f"{safe_name(opp)}.md"                  # 新画像统一写全局，换桌也能直接用
             tpl = (self.dir.parent / "_template" / "_user_template.md")
-            prompt = PROFILE_PROMPT.format(opp=self.opp, table=self.dir.name, tpl=tpl.read_text() if tpl.exists() else "", old=old.read_text() if old else "(无)",
+            prompt = PROFILE_PROMPT.format(opp=opp, table=self.dir.name, tpl=tpl.read_text() if tpl.exists() else "", old=old.read_text() if old else "(无)",
                                            hands="\n".join(json.dumps(h, ensure_ascii=False) for h in hands))
             md = self.model(prompt, timeout=180, max_tokens=4000).strip()
             md = re.sub(r"^```(?:markdown)?\n|\n```$", "", md)

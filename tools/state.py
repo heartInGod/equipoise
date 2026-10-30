@@ -262,8 +262,36 @@ def parse(src):
         st["screen"] = "waiting"
     else:
         st["screen"] = "other"
+    st["opp_name"] = opp_name(st) if st["screen"] in ("my_turn", "other", "anim") else None
     st["ms"] = int((time.time() - t0) * 1000); st["ms_cards"] = int(t_cards * 1000)
     return st
+
+
+# 单挑桌对手昵称：顶部中央座位 (720,416) 下方的名字行（2026-10-30 真机帧统计：little00 出现在 x≈715,y≈416；
+# 对手行动时该位置被“加注/跟注/下注/让牌”等动作标签盖住；OCR 常把 0 读成 O，如 little0O）
+OPP_NAME_BOX = (560, 360, 880, 470)
+_NOT_NAME = re.compile(r"^[+\-−]?[\d.,]+$|密码局|底池|All ?in|ALL ?IN|等待|思考|离开|留座|补码|买入|超时")
+
+
+def opp_name(st):
+    """当前帧的对手昵称原文（可能有 OCR 误差），读不到返回 None。用 name_key() 归一化后再比较。"""
+    x0, y0, x1, y1 = OPP_NAME_BOX
+    for t, x, y in st.get("texts") or []:
+        if not (x0 <= x <= x1 and y0 <= y <= y1): continue
+        t = t.strip()
+        if len(t) < 2 or len(t) > 20 or _NOT_NAME.search(t): continue
+        if any(w in t for w in ACTION_WORDS + OTHER_BTNS): continue
+        if not re.search(r"[A-Za-z\u4e00-\u9fff]", t): continue
+        return t
+    return None
+
+
+def name_key(t):
+    """昵称归一化键：NFKC、小写、去空白和下划线，易混字符 o→0、l/i/|→1（只用于比较，不用于显示）"""
+    import unicodedata
+    k = unicodedata.normalize("NFKC", t or "").lower()
+    k = re.sub(r"[\s_]+", "", k)          # 文件名里空格会被换成 _
+    return k.translate(str.maketrans({"o": "0", "l": "1", "i": "1", "|": "1"}))
 
 
 def preset_off(im, sx, sy):

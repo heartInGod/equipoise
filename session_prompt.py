@@ -9,7 +9,7 @@
 - 手结束（检测到新手牌）时生成结果摘要（行动线、盈亏、结束方式），写 <table>/bot_hands.jsonl，
   并可触发 ProfileUpdater 异步更新画像（不在决策路径上，不受倒计时约束）。
 """
-import json, re, threading, time
+import json, queue, re, threading, time
 from pathlib import Path
 
 import state as wpstate
@@ -391,7 +391,8 @@ class HandSession:
         self.pop = opp_stats(population) if population else (store.pop(opp) if store and warm else None)
         self.warm, self.need_votes, self.log = warm, votes, log
         self._votes, self._pending, self._loading, self._thread = [], None, None, None
-        self._unwritten = []                 # 对手还没识别出来时结束的手，识别后补上 opp 再写
+        self._unwritten = []                 # 对手还没识别出来时结束的手，识别后补上昵称再写
+        self._wq, self._writer, self._prof_new = queue.Queue(), None, None   # 每手记录的后台写线程（jsonl/对手库/画像回调都不在主线程）
         self._static()
         self.hands_log, self.on_hand_end = hands_log, on_hand_end
         if opp and warm and history is None and hist_stats is None: self._start_load(opp)
@@ -457,6 +458,19 @@ class HandSession:
                  + ("，已载入画像" if self.prof else ""))
 
     def _emit(self, rec):
+        """一手结束：交给后台写线程（按顺序：追加 jsonl → 累计进对手库 → 画像回调 → 取最新画像），主线程只入队"""
+        if self._writer is None:
+            self._writer = threading.Thread(target=self._write_loop, daemon=True); self._writer.start()
+        self._wq.put(dict(rec))
+
+    def _write_loop(self):
+        while True:
+            rec = self._wq.get()
+            try: self._write(rec)
+            except Exception as e: self.log(f"[session] 写手牌记录失败: {type(e).__name__}: {e}")
+            finally: self._wq.task_done()
+
+    def _write(self, rec):
         if self.hands_log:
             Path(self.hands_log).parent.mkdir(parents=True, exist_ok=True)
             with open(self.hands_log, "a") as f: f.write(json.dumps(rec, ensure_ascii=False) + "\n")
@@ -466,12 +480,18 @@ class HandSession:
         if self.on_hand_end:
             try: self.on_hand_end(rec, self)
             except Exception: pass
+        if self.store is not None and rec.get("opp"):    # 画像可能被 ProfileUpdater 更新过：查好放着，下一手开始时直接换上
+            d = self.store.lookup(rec["opp"])
+            if d and d.get("profile"): self._prof_new = (d["name"], {"profile": d["profile"], "ptype": d["ptype"]})
+
+    def flush(self):
+        """等后台写完（退出前 / 测试用）"""
+        self._wq.join()
 
     def _refresh_prof(self):
-        """有对手库时每手开始查库取最新画像（ProfileUpdater 写完 md 会同步进库）"""
-        if self.store is None or not self.opp: return
-        d = self.store.lookup(self.opp)
-        if d and d.get("profile"): self.prof = {"profile": d["profile"], "ptype": d["ptype"]}
+        """每手开始换上后台写线程查好的最新画像（主线程不查库）"""
+        p, self._prof_new = self._prof_new, None
+        if p and same_opp(p[0], self.opp): self.prof = p[1]
 
     @property
     def n_hist(self):

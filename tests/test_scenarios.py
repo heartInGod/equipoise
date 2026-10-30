@@ -592,7 +592,7 @@ class TestSession(unittest.TestCase):
         self.b.handle("x", self.pre(), 100)
         self.b.handle("x", self.pre(hero=("7c", "2d"), stack=209), 130)    # 新手牌：总筹码 200 -> 210
         self.assertEqual(len(self.model.calls[1]["messages"]), 1)          # 手内对话已清空
-        recs = [json.loads(l) for l in self.log.read_text().splitlines()]
+        self.sess.flush(); recs = [json.loads(l) for l in self.log.read_text().splitlines()]
         self.assertEqual(len(recs), 1)
         self.assertEqual(recs[0]["delta"], 10); self.assertEqual(recs[0]["hero"], ["Ah", "Kd"])
         self.assertIn("手牌 #1", self.sess.recent[0])
@@ -658,7 +658,7 @@ class TestSession(unittest.TestCase):
             b.handle("x", st2, 130)                                         # 第 2 手开始：生效
             self.assertEqual(sess.opp, "little00"); self.assertEqual(sess.n_hist, 7)
             self.assertIn("此前7+本局1", sess.user_text(st2, b.hist))
-            recs = [json.loads(l) for l in self.log.read_text().splitlines()]
+            sess.flush(); recs = [json.loads(l) for l in self.log.read_text().splitlines()]
             self.assertEqual([r["opp"] for r in recs], ["little00"])         # 识别前结束的第 1 手补写
             self.assertIn("当前对手：little00", sess.static)
             self.assertTrue(any("识别到对手 little00" in m for m in logs))
@@ -669,6 +669,19 @@ class TestSession(unittest.TestCase):
             self.assertIn("当前对手：NewGuy", sess.static)
         finally:
             P.TABLES, P.PLAYERS = old
+
+    def test_hand_write_is_async(self):
+        """每手记录（jsonl/对手库/画像回调）在后台线程写，写慢也不阻塞主线程出下一手的请求"""
+        gate = threading.Event()
+        sess = self.P.HandSession(None, "opp", hands_log=self.log, on_hand_end=lambda rec, s: gate.wait(5))
+        sess.build(self.pre(), S.HandHist())
+        t0 = time.time()
+        sess.build(self.pre(hero=("7c", "2d"), stack=209), S.HandHist())       # 上一手结束 -> 入队
+        sess.build(self.pre(hero=("9c", "9d"), stack=199), S.HandHist())
+        self.assertLess(time.time() - t0, 0.5)
+        self.assertNotEqual(sess._writer.ident, threading.get_ident())
+        gate.set(); sess.flush()
+        self.assertEqual([json.loads(l)["hero"] for l in self.log.read_text().splitlines()], [["Ah", "Kd"], ["7c", "2d"]])   # 顺序不变
 
     def test_flatten_for_generic(self):
         req, _ = self.sess.build(self.pre(), S.HandHist())
@@ -756,6 +769,7 @@ class TestOppDB(unittest.TestCase):
         self.assertEqual(sess.opp, "little00"); self.assertEqual(sess.n_hist, 5); self.assertEqual(sess.pop["n"], 6)
         self.assertIn("累计6手(此前5+本局1)", u); self.assertIn("群体参考（其他对手共6手", u)
         self.assertIn("简述：跟注站", u); self.assertIn("库里的画像", req["system"][1]["text"])
+        sess.flush()
         self.assertEqual(self.db.lookup("little00")["n_hands"], 6)               # 识别前结束的那手补上昵称、写 jsonl 后累计进库
         self.assertEqual(self.db.sync([log]), 0)                                 # 已同步过，重启不会重复累计
 

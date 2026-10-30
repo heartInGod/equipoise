@@ -699,6 +699,7 @@ def run_live(a):
             rec_p["grab_period"] = round(sum(grab.periods) / len(grab.periods), 2) if grab.periods else None
             print(json.dumps(rec_p, ensure_ascii=False), flush=True)
     grab.stop = True; w.flush()
+    if bot.sess: bot.sess.flush()
 
 
 def run_replay(a):
@@ -726,3 +727,4 @@ def run_replay(a):
         if rec["act"] != "wait" or rec.get("note"):
             print(json.dumps({k: v for k, v in rec.items() if k != "state"}, ensure_ascii=False), flush=True)
     w.flush()
+    if bot.sess: bot.sess.flush()

@@ -3,7 +3,7 @@
 规则：
 - 受保护（永不删）：tests/golden_frames.json 里的帧 + tests/*.py 里按名字引用的帧（如 005212_my_turn）。
 - 其余 .raw 按修改时间从旧到新删，直到“未保护帧”总大小 ≤ 上限。
-- 上限默认 4GB，环境变量 EQUIPOISE_LIVE_KEEP_GB 覆盖；设为 0 表示不清理。
+- 上限默认 30GB，环境变量 EQUIPOISE_LIVE_KEEP_GB 覆盖；设为 0 表示不清理。
 - 只动 .raw；watch.log 等其他文件不碰。
 
 用法：
@@ -17,7 +17,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 LIVE = ROOT / "model_test" / "live"
-KEEP_GB = float(os.environ.get("EQUIPOISE_LIVE_KEEP_GB", "4"))
+KEEP_GB = float(os.environ.get("EQUIPOISE_LIVE_KEEP_GB", "30"))
 _REF = re.compile(r"\b(\d{6}(?:_\d{3})?_[a-z_]+?)(?:\.raw)?\b")
 
 

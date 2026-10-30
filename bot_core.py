@@ -656,7 +656,7 @@ def run_live(a):
     """真机：Grabber 连续截图 -> parse -> Bot.handle"""
     logroll.day_dir()                                   # 建今天的目录并清理 90 天前的日志
     live = ROOT / "model_test" / "live"; live.mkdir(parents=True, exist_ok=True)
-    try:                                                # 帧滚动清理：保护 golden/测试帧，未保护帧超过上限(默认4GB)删最旧的
+    try:                                                # 帧滚动清理：保护 golden/测试帧，未保护帧超过上限(默认30GB)删最旧的
         import frameroll
         dels, _, after, _ = frameroll.cleanup(live)
         if dels: print(f"[frameroll] 删除最旧帧 {len(dels)} 张，未保护帧剩 {after / 1024 ** 3:.2f}GB", flush=True)
@@ -670,7 +670,7 @@ def run_live(a):
     model = make_model(a.model)
     bot = Bot(io, Decider(model, hedge_after=a.hedge), w, logroll.DailyPath(f"text__{a.model.replace('/', '__')}.jsonl"), live, unk,
               logroll.DailyPath("unknown.jsonl"), dry=a.dry, stuck=a.stuck, budget=a.budget, prompt=a.prompt,
-              session=make_session(a, model, live=not a.dry), preflop_rule=getattr(a, "preflop_rule", False))
+              session=make_session(a, model, live=not a.dry), preflop_rule=getattr(a, "preflop_rule", True))
     t0, min_t = time.time(), 0.0
     while time.time() - t0 < a.max_sec:
         src, t_shot = grab.get(min_t)
@@ -695,7 +695,7 @@ def run_replay(a):
     io, w = RecIO(), AsyncWriter()
     decider = None if getattr(a, "rule", False) else Decider(make_model(a.model), hedge_after=a.hedge)
     bot = Bot(io, decider, w, logroll.path(f"replay__{time.strftime('%m%d_%H%M')}.jsonl"), replay=True, stuck=1e9, budget=a.budget, prompt=a.prompt,
-              session=make_session(a), preflop_rule=getattr(a, "preflop_rule", False))
+              session=make_session(a), preflop_rule=getattr(a, "preflop_rule", True))
     for fp in frames:
         hh = fp.name[:6]
         clock = int(hh[:2]) * 3600 + int(hh[2:4]) * 60 + int(hh[4:6])

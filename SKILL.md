@@ -37,7 +37,7 @@ description: 德州扑克（无限注 NLH）职业牌手助手 + WePoker 真机�
 | `adb_act.sh` | 早期 ADB 快捷脚本（固定坐标，部分未验证） | 只在 `tools/act.py` 不可用时 |
 | `logs/` | 系统日志，按天滚动：`logs/<YYYY-MM-DD>/`（`text__<model>.jsonl` 为文本模式主日志，另有 `unknown.jsonl`、`act.jsonl`、`replay__*.jsonl`），只保留最近 90 天（`tools/logroll.py`，可用 `EQUIPOISE_LOG_KEEP_DAYS` 调整）；根下 `stack_cache.json` 为分析缓存、`_backup/` 为旧代码备份 | 复盘 |
 | `model_test/` | 截图样本：`live/` 实时帧、`unknown/` 无法处理的界面、`act/` 动作前后对比 | 调试识别/点击 |
-| `tools/frameroll.py` | `model_test/live` 帧滚动清理：保护 golden（`tests/golden_frames.json`）和测试按名引用的帧，其余按修改时间删最旧，直到未保护帧 ≤ 4GB（`EQUIPOISE_LIVE_KEEP_GB`，0=不清理）；`tlive` 真机启动时自动执行，命令行默认只预览、`--apply` 才删 | 磁盘占用 |
+| `tools/frameroll.py` | `model_test/live` 帧滚动清理：保护 golden（`tests/golden_frames.json`）和测试按名引用的帧，其余按修改时间删最旧，直到未保护帧 ≤ 30GB（`EQUIPOISE_LIVE_KEEP_GB`，0=不清理）；`tlive` 真机启动时自动执行，命令行默认只预览、`--apply` 才删 | 磁盘占用 |
 | `.gitignore` / git | 项目已 git 初始化；`model_test/`、`logs/`、`pluribus-poker-AI/`、`tools/ocr` 编译产物、`*.md.bak` 不入库 | 改代码后提交 |
 | `model_test/state1.png` | `tprobe` 默认样例图 | 测试识别+决策 |
 | `model_test/manual/` | `adb_act.sh look/shot` 手动截图（脚本已弃用） | — |
@@ -116,11 +116,11 @@ GTO 基线：<无对手信息时怎么打，一句话>
 python3 poker_bot.py list                                   # 列出可用模型
 python3 tools/state.py                                      # 现场截图并打印识别结果（不调模型）
 python3 poker_bot.py tprobe --model <provider/model> --img model_test/state1.raw   # 单帧测试文本模式
-python3 poker_bot.py tlive --model <provider/model> --max-sec 600 [--dry] [--budget 8 --hedge 3.0] [--preflop-rule]   # 主模式（--preflop-rule：翻前不问模型直接本地规则，默认关）
+python3 poker_bot.py tlive --model <provider/model> --max-sec 600 [--dry] [--budget 8 --hedge 3.0] [--no-preflop-rule]   # 主模式（翻前默认不问模型、直接本地规则；--no-preflop-rule 让翻前也问模型）
 python3 poker_bot.py tlive --model <m> --replay model_test/live --t0 001000 --t1 002000 [--rule]   # 离线回放，不连手机（--rule 不调模型）
 python3 tests/test_scenarios.py                            # 场景测试（改 bot_core/state 后必跑，SKIP_GOLDEN=1 更快）
 python3 tools/act.py look | fold | check | call | allin | raise 3BB | raise 1/2   # 手动操作
-python3 tools/frameroll.py [--keep-gb 4] [--apply]           # live 帧滚动清理（默认只预览）
+python3 tools/frameroll.py [--keep-gb 30] [--apply]           # live 帧滚动清理（默认只预览）
 ```
 
 - **优先用文本模式 `tlive`**（本地识别 + 模型只做决策）。`probe/live` 是早期直接把图片丢给模型的模式，慢且不稳定。
@@ -161,7 +161,7 @@ python3 tools/frameroll.py [--keep-gb 4] [--apply]           # live 帧滚动清
 - `tables/20261029_wepoker_practice/`：HU 单挑练习局，对手 `little00`。`player.log` 还没有手牌，座位表里引用的 `little00.md` 也还没建。
 - short/long 模式的 `TPROMPT` 是写死的通用单挑策略，不读画像；**session 模式**会读 `tables/<桌>/<opp>.md` 注入 system（没有画像时按基线打）。画像自动更新只基于代码记录的行动线与盈亏，看不到对手亮牌（parse 尚未识别摊牌），需要时仍按工作流 C 手动补。
 - `adb_act.sh` 的坐标来自早期截图，部分没验证过；`tools/act.py` 每次按 OCR 定位，更可靠。
-- 2026-10-30 修复（commit 见 `git log`）：灰档预设误点（“我方下注到 ?”）、`rule_decide` 危险牌面（四同花/一张成顺/三同花/大公共对）两对·顶对降级、rule_decide 强弱判断只看成牌行（原来听牌行的“顺子听牌”字样会把纯顺听当成顺子强牌）、组合听牌 outs 去重与精确胜率（004552 Td8d@KdQd9h=12 outs 到河 45%）、hedge 3.8→3.0、`--preflop-rule` 开关、live 帧滚动清理。真机 100 手复测尚未做（需用户明确要求再跑）。
+- 2026-10-30 修复（commit 见 `git log`）：灰档预设误点（“我方下注到 ?”）、`rule_decide` 危险牌面（四同花/一张成顺/三同花/大公共对）两对·顶对降级、rule_decide 强弱判断只看成牌行（原来听牌行的“顺子听牌”字样会把纯顺听当成顺子强牌）、组合听牌 outs 去重与精确胜率（004552 Td8d@KdQd9h=12 outs 到河 45%）、hedge 3.8→3.0、`--preflop-rule`（默认开）、live 帧滚动清理。真机 100 手复测尚未做（需用户明确要求再跑）。
 - 文档中的范围和统计参考值按 6max 100BB 现金局给出；单挑、锦标赛、短码要另行调整（单挑基线：BTN 开约 80%，BB 防守 50–60%+）。
 
 ---

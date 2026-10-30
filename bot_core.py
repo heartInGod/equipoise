@@ -645,7 +645,8 @@ class Bot:
 
 # ======================= 运行 =======================
 def make_session(a, model=None, live=False):
-    """--prompt session 时构造 HandSession；真机模式写 <table>/bot_hands.jsonl 并按 --profile-every 异步更新画像"""
+    """--prompt session 时构造 HandSession；真机模式写 <table>/bot_hands.jsonl（含模型对话）+ players/<opp>/hands.jsonl（明细），
+    计数直接加进对手库，并按 --profile-every 异步更新画像"""
     if getattr(a, "prompt", None) != "session": return None
     from session_prompt import HandSession, ProfileUpdater
     tdir = ROOT / a.table if getattr(a, "table", None) else None
@@ -655,13 +656,13 @@ def make_session(a, model=None, live=False):
     warm = live if warm is None else warm          # 真机默认热启动；回放默认不载入（历史里可能就有被回放的手）
     # 对手昵称从截图识别（Bot.handle -> sess.see_opp），识别到/换人后查库取其跨桌统计+画像，下一手生效；--opp 只是可选初值
     store = None
-    if warm:                                       # 对手库：jsonl 增量累计进 players 表（统计+画像），识别到对手后按主键查库
+    if warm:                                       # 对手库：每人一行计数+画像（新库时从 jsonl 重建），识别到对手后按主键查库
         try:
             import oppdb
             from session_prompt import _hand_files, _profile_files
             store = oppdb.open_db(_hand_files(), _profile_files())
             np_, nh = store.counts()
-            print(f"[oppdb] 对手 {np_} 人 / 累计 {nh} 手（本次累计新增 {store.synced} 手，{store.sync_ms:.0f}ms），识别到对手后按需查库", flush=True)
+            print(f"[oppdb] 对手 {np_} 人 / 累计 {nh} 手" + (f"（新库，从 jsonl 重建 {store.synced} 手）" if store.synced else "") + f"，打开 {store.sync_ms:.0f}ms，识别到对手后按需查库", flush=True)
         except Exception as e:
             print(f"[oppdb] 打开失败，退回扫 jsonl: {type(e).__name__}: {e}", flush=True)
     upd = ProfileUpdater(model, tdir, opp, every=a.profile_every, store=store) if live and model and tdir and a.profile_every > 0 else None

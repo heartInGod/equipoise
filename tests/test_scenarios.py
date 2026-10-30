@@ -603,12 +603,12 @@ class TestSession(unittest.TestCase):
         """热启动：对手在别的桌的历史手并入统计；冷启动：新对手给群体参考；同一手多次记录只算一次"""
         P = self.P
         root = Path(self.tmp); tables, players = root / "tables", root / "players"
-        (tables / "old_table").mkdir(parents=True)
+        (players / "villain").mkdir(parents=True)
         h_open = {"t": "2026-10-29 10:00:00", "opp": "villain", "pos": "BB", "hero": ["7c", "2d"], "board": [],
                   "ev": [["翻前", "对手开局加注到 4"], ["翻前", "我方弃牌"]], "how": "我方弃牌", "delta": -2}
         rows = [dict(h_open, hero=[f"{r}c", "2d"]) for r in "3456789"] + [dict(h_open, hero=["3c", "2d"], t="x")]   # 最后一条与第一条重复
         rows.append(dict(h_open, opp="other"))
-        (tables / "old_table" / "bot_hands.jsonl").write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
+        (players / "villain" / "hands.jsonl").write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
         hist = P.load_hands("villain", tables=tables, players=players)
         pop = P.load_hands(exclude="villain", tables=tables, players=players)
         self.assertEqual(len(hist), 7); self.assertEqual(len(pop), 1)
@@ -716,36 +716,54 @@ class TestOppDB(unittest.TestCase):
         f.parent.mkdir(parents=True, exist_ok=True)
         with open(f, mode) as fo: fo.write("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
 
-    def test_schema_and_incremental_sync(self):
+    def test_schema_and_add_per_hand(self):
         cols = {r[1] for r in self.db.conn.execute("PRAGMA table_info(players)")}
-        self.assertTrue({"key", "n", "vp", "vp_n", "b3", "b4", "cb", "cb_opp", "profile", "ptype", "last_seen"} <= cols)
+        self.assertTrue({"key", "n", "vp", "vp_n", "won", "vp_won", "net", "b3", "b4", "cb", "cb_opp", "profile", "ptype", "last_seen"} <= cols)
         self.assertFalse({"tables", "stats"} & cols)                                          # 统计拆成列，不记桌
         self.assertIn("idx_players_last", {r[1] for r in self.db.conn.execute("PRAGMA index_list(players)")})
-        self.assertNotIn("hands", {r[0] for r in self.db.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")})   # 明细不进库
-        f = self.tmp / "tables" / "t1" / "bot_hands.jsonl"
-        self.jl(f, [self.h("villain", i) for i in range(3)] + [self.h("other", 9)])
-        self.assertEqual(self.db.sync([f]), 4); self.assertEqual(self.db.sync([f]), 0)     # 重复同步不重复计数
-        with open(f, "a") as fo: fo.write(json.dumps(self.h("villain", 5)) + "\n" + json.dumps(self.h("villain", 6))[:20])   # 最后一行还没写完
-        self.assertEqual(self.db.sync([f]), 1)
-        with open(f, "a") as fo: fo.write(json.dumps(self.h("villain", 6))[20:] + "\n")
-        self.assertEqual(self.db.sync([f]), 1)
+        tabs = {r[0] for r in self.db.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        self.assertEqual(tabs, {"players"})                                                   # 明细不进库，也不再记 jsonl 偏移
+        self.assertTrue(self.db.fresh)
+        for i in (0, 1, 2): self.db.add_hands([self.h("villain", i)])                        # 一手一手加
+        self.db.add_hands([self.h("other", 9), self.h("vi11ain", 5), self.h("villain", 6)])
         self.db.close(); self.db = self.O.OppDB(self.tmp / "o.db")                            # 重开后直接查库
+        self.assertFalse(self.db.fresh)
         v = self.db.lookup("vi11ain")                                                         # OCR l→1 容错
-        self.assertEqual((v["name"], v["n_hands"], v["last_seen"][-2:]), ("villain", 5, "06"))
+        self.assertEqual((v["n_hands"], v["first_seen"][-2:], v["last_seen"][-2:]), (5, "00", "06"))
         self.assertEqual(v["stats"], self.P.opp_stats([self.h("villain", i) for i in (0, 1, 2, 5, 6)]))
+        self.assertEqual((v["stats"]["won"], v["stats"]["vp_won"], v["stats"]["net"]), (5, 5, 10))   # 每手对手收池 2 筹码
         self.assertIsNone(self.db.lookup("nobody"))
-        self.assertEqual(self.db.sync([f]), 0)
         r = self.db.rates("villain")[0]                                                       # 视图：百分比
-        self.assertEqual((r["hands"], r["vpip"], r["open"], r["b3"]), (5, 100.0, 100.0, None))
+        self.assertEqual((r["hands"], r["vpip"], r["won"], r["open"], r["b3"], r["bb100"]), (5, 100.0, 100.0, 100.0, None, 100.0))
 
-    def test_schema_upgrade_rebuilds(self):
-        """表结构版本变了：清空重建，再从 jsonl 重新累计（不丢数据）"""
-        f = self.tmp / "tables" / "t1" / "bot_hands.jsonl"
-        self.jl(f, [self.h("villain", i) for i in range(3)]); self.db.sync([f])
-        self.db.conn.execute("PRAGMA user_version = 1"); self.db.close()
-        self.db = self.O.OppDB(self.tmp / "o.db")
-        self.assertIsNone(self.db.lookup("villain"))
-        self.assertEqual(self.db.sync([f]), 3); self.assertEqual(self.db.lookup("villain")["n_hands"], 3)
+    def test_rebuild_from_jsonl(self):
+        """新库 / 表结构升级：open_db 从明细 jsonl 全量重建（画像保留）；平时打开不读 jsonl"""
+        f = self.tmp / "players" / "villain" / "hands.jsonl"
+        self.jl(f, [self.h("villain", i) for i in range(3)])
+        db = self.O.open_db([f], path=self.tmp / "n.db")
+        self.assertEqual((db.synced, db.lookup("villain")["n_hands"]), (3, 3))
+        self.jl(f, [self.h("villain", 7)]); db.close()
+        db = self.O.open_db([f], path=self.tmp / "n.db")
+        self.assertEqual((db.synced, db.lookup("villain")["n_hands"]), (0, 3))                # 平时不读 jsonl
+        db.conn.execute("PRAGMA user_version = 1"); db.close()
+        db = self.O.open_db([f], path=self.tmp / "n.db")
+        self.assertEqual((db.synced, db.lookup("villain")["n_hands"]), (4, 4))
+        g = self.tmp / "villain.md"; g.write_text("# 画像\n- 类型：松凶\n")
+        db.sync_profiles([g]); self.assertEqual(db.rebuild([f]), 4)
+        self.assertEqual((db.lookup("villain")["n_hands"], db.lookup("villain")["ptype"]), (4, "松凶"))
+        db.close()
+
+    def test_hand_detail(self):
+        """明细 jsonl：每个动作的位置 / 类型 / 投入 / 本街累计到 / 动作前底池 / 剩余（BB）"""
+        rec = {"t": "x", "opp": "v", "pos": "BTN", "hero": ["Ah", "Kd"], "board": ["2c", "7d", "9h"], "how": "", "delta": 6,
+               "start": {"me": 200, "opp": 200},
+               "ev": [["翻前", "我方加注到 4（开局加注(2bet)）"], ["翻前", "对手跟注"], ["翻牌", "对手让牌"], ["翻牌", "我方下注到 3"], ["翻牌", "对手弃牌"]]}
+        d = self.P.hand_detail(rec, "t1")
+        self.assertEqual(d["table"], "t1"); self.assertEqual(d["start_bb"], {"me": 100.0, "opp": 100.0})
+        A = [(a["st"], a["who"], a["pos"], a["act"], a["add"], a["to"], a["pot"], a["left"]) for a in d["acts"]]
+        self.assertEqual(A, [("preflop", "me", "BTN", "raise", 1.5, 2.0, 1.5, 98.0), ("preflop", "opp", "BB", "call", 1.0, 2.0, 3.0, 98.0),
+                             ("flop", "opp", "BB", "check", 0.0, 0.0, 4.0, 98.0), ("flop", "me", "BTN", "bet", 1.5, 1.5, 4.0, 96.5),
+                             ("flop", "opp", "BB", "fold", 0.0, 0.0, 5.5, 98.0)])
 
     def test_stat_counters(self):
         """新增统计口径：4B / 面对4B弃 / 对limp加注 / 我方cbet（对手先让牌）/ 转牌二次cbet / check-raise / 摊牌赢"""
@@ -794,7 +812,8 @@ class TestOppDB(unittest.TestCase):
         self.db.add_hands([self.h("little00", i) for i in range(5)] + [self.h("other", i) for i in range(6)])
         g = self.tmp / "little00.md"; g.write_text("# 画像\n- 类型：跟注站\n库里的画像\n"); self.db.sync_profiles([g])
         log = self.tmp / "tables" / "t1" / "bot_hands.jsonl"
-        sess = P.HandSession(None, None, warm=True, store=self.db, store_write=True, hands_log=log, log=lambda m: None)
+        sess = P.HandSession(None, None, warm=True, store=self.db, store_write=True, hands_log=log, log=lambda m: None,
+                             players_dir=self.tmp / "players")
         self.assertEqual(sess.pop["n"], 11)                                      # 未识别前用全体做群体参考
         _, u = sess.build(self.pre(), S.HandHist())
         self.assertIn("群体参考（其他对手共11手", u)
@@ -805,26 +824,32 @@ class TestOppDB(unittest.TestCase):
         self.assertIn("累计6手(此前5+本局1)", u); self.assertIn("群体参考（其他对手共6手", u)
         self.assertIn("简述：跟注站", u); self.assertIn("库里的画像", req["system"][1]["text"])
         sess.flush()
-        self.assertEqual(self.db.lookup("little00")["n_hands"], 6)               # 识别前结束的那手补上昵称、写 jsonl 后累计进库
-        self.assertEqual(self.db.sync([log]), 0)                                 # 已同步过，重启不会重复累计
+        self.assertEqual(self.db.lookup("little00")["n_hands"], 6)               # 识别前结束的那手补上昵称，计数直接加进库
+        det = [json.loads(l) for l in (self.tmp / "players" / "little00" / "hands.jsonl").read_text().splitlines()]
+        self.assertEqual(len(det), 1); self.assertIn("acts", det[0]); self.assertNotIn("msgs", det[0])   # 对手明细（含逐个动作）
+        self.assertIn("msgs", json.loads(log.read_text().splitlines()[0]))           # 桌内记录保留模型对话
 
     def pre(self, hero=("Ah", "Kd"), stack=199):
         return mk(hero=hero, buttons={"弃牌": FOLD, "跟注": CHECK, "加注": RAISE},
                   nums={"pot": 3, "opp_bet": 2, "my_bet": 1, "to_call": 1, "my_stack": stack})
 
     def test_query_speed(self):
-        """1 万个对手 / 20 万手：增量累计耗时；不热加载，直接查库 lookup+群体参考的耗时"""
-        f = self.tmp / "tables" / "big" / "bot_hands.jsonl"
-        self.jl(f, [self.h(f"p{i % 10000}", i % 60) for i in range(200000)], "w")
-        t0 = time.time(); self.db.sync([f]); t_sync = time.time() - t0
-        db = self.O.OppDB(self.tmp / "o.db")
-        t0 = time.time(); db.sync([f]); t_noop = (time.time() - t0) * 1000
+        """1 万个对手 / 20 万手：重建耗时；逐手写入耗时；不热加载，直接查库 lookup+群体参考的耗时"""
+        f = self.tmp / "players" / "big" / "hands.jsonl"
+        self.jl(f, [dict(self.h(f"p{i % 10000}", i % 60), n=i) for i in range(200000)], "w")
+        t0 = time.time(); db = self.O.open_db([f], path=self.tmp / "big.db"); t_rb = time.time() - t0
+        self.assertEqual(db.counts(), (10000, 200000))
+        db.close(); t0 = time.time(); db = self.O.open_db([f], path=self.tmp / "big.db"); t_open = (time.time() - t0) * 1000
+        db.pop("x")
+        t0 = time.time()
+        for i in range(2000): db.add_hands([self.h(f"p{i}", 1)])
+        t_add = (time.time() - t0) / 2000 * 1000
         t0 = time.time()
         for i in range(10000): db.lookup(f"p{i}"); db.pop(f"p{i}")
         t_q = (time.time() - t0) / 10000 * 1000
-        print(f"\n[oppdb] 20万手首次累计 {t_sync:.1f}s，无新增时启动同步 {t_noop:.1f}ms，查库 lookup+群体参考 {t_q:.3f}ms/次", file=sys.stderr)
-        self.assertEqual(db.counts(), (10000, 200000)); self.assertLess(t_q, 5)
-        self.assertEqual(db.pop("p1")["n"], 200000 - 20)
+        print(f"\n[oppdb] 20万手重建 {t_rb:.1f}s，平时打开 {t_open:.1f}ms，每手写入 {t_add:.2f}ms，查库 lookup+群体参考 {t_q:.3f}ms/次", file=sys.stderr)
+        self.assertEqual(db.counts(), (10000, 202000)); self.assertLess(t_q, 5); self.assertLess(t_add, 20)
+        self.assertEqual(db.pop("p1")["n"], 202000 - 21)
         db.close()
 
 

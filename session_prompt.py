@@ -139,7 +139,8 @@ def hand_key(h):
 
 
 def _hand_files(tables=None, players=None):
-    return sorted(Path(tables or TABLES).glob("*/bot_hands.jsonl")) + sorted(Path(players or PLAYERS).glob("*/hands.jsonl"))
+    """对手明细 jsonl：players/<opp>/hands.jsonl（真机每手 + 导入的回放手），只用于重建对手库 / 无库时兜底"""
+    return sorted(Path(players or PLAYERS).glob("*/hands.jsonl"))
 
 
 def _profile_files(tables=None, players=None):
@@ -149,7 +150,7 @@ def _profile_files(tables=None, players=None):
 
 
 def load_hands(opp=None, exclude=None, tables=None, players=None, limit=HIST_LIMIT):
-    """跨桌读机器人记录的手（tables/*/bot_hands.jsonl + players/*/hands.jsonl），去重后按时间升序取最近 limit 手。
+    """跨桌读对手明细（players/*/hands.jsonl），去重后按时间升序取最近 limit 手。
     opp 给定时只要该对手；exclude 给定时排除该对手（算群体参考）。"""
     seen, out = set(), []
     for f in _hand_files(tables, players):
@@ -206,6 +207,7 @@ def _pct(a, b):
 STAT_FIELDS = (
     ("n", "累计手数"),
     ("vp_n", "翻前有主动决策的手（VPIP/PFR 分母）"), ("vp", "主动入池 VPIP（入池率）"), ("pfr", "翻前加注 PFR"),
+    ("won", "收池（对手赢下底池）"), ("vp_won", "主动入池后收池"), ("net", "对手净赢筹码（1BB=2，可为负）"),
     ("btn", "按钮位有行动"), ("open", "按钮位开池加注"), ("limp", "按钮位平跟 limp"),
     ("vs_open", "大盲面对我方开池"), ("b3", "3bet"), ("bb_call", "大盲跟注开池"), ("bb_fold", "大盲弃牌"),
     ("vs_limp", "大盲面对我方 limp"), ("iso", "对 limp 加注"),
@@ -232,6 +234,7 @@ def opp_stats(hands):
     nxt = lambda seq, i, who: next((j for j in range(i, len(seq)) if seq[j].startswith(who)), None)
     for h in hands:
         ev, pos, board = h.get("ev") or [], h.get("pos"), h.get("board") or []
+        vp0 = S["vp"]
         pre = [e for s, e in ev if s == "翻前"]
         last = ev[-1][1] if ev else ""
         folded_pre = not board and last.startswith("我方")          # 翻前以我方动作收尾 = 对手弃牌
@@ -265,6 +268,10 @@ def opp_stats(hands):
                 S["vs_limp"] += 1; S["vp_n"] += 1
                 r = nxt(pre, k + 1, "对手")
                 if r is not None and opp_r(pre[r]): S["iso"] += 1; S["vp"] += 1; S["pfr"] += 1
+        d = h.get("delta")                                            # 我方盈亏：负 = 对手收池
+        if d is not None:
+            S["net"] -= d
+            if d < 0: S["won"] += 1; S["vp_won"] += S["vp"] > vp0
         agg = next((("opp" if e.startswith("对手") else "me") for e in reversed(pre) if _RAISE.search(e)), None)   # 翻前最后的进攻方
         if len(board) >= 3:
             S["flop"] += 1
@@ -340,7 +347,9 @@ def profile_block(S, desc, n_hist=0, pop=None):
 def _stat_lines(S, scope):
     S = dict(dict.fromkeys(STAT_KEYS, 0), **S)
     af = f"{S['agg'] / S['calls']:.1f}" if S["calls"] else "—"
-    return [f"  翻前：{scope} VPIP{_pct(S['vp'], S['vp_n'])}、PFR{_pct(S['pfr'], S['vp_n'])}、开池{_pct(S['open'], S['btn'])}、limp{_pct(S['limp'], S['btn'])}、"
+    return [f"  盈亏：收池{_pct(S['won'], S['n'])}、入池后收池{_pct(S['vp_won'], S['vp'])}、对手净赢 {bb(S['net'])}BB"
+            + (f"（{S['net'] / 2 / S['n'] * 100:+.0f}BB/100手）" if S["n"] else ""),
+            f"  翻前：{scope} VPIP{_pct(S['vp'], S['vp_n'])}、PFR{_pct(S['pfr'], S['vp_n'])}、开池{_pct(S['open'], S['btn'])}、limp{_pct(S['limp'], S['btn'])}、"
             f"3B{_pct(S['b3'], S['vs_open'])}、4B{_pct(S['b4'], S['f3_opp'])}、大盲面对开池弃{_pct(S['bb_fold'], S['vs_open'])}、"
             f"面对3B弃{_pct(S['f3_fold'], S['f3_opp'])}、面对4B弃{_pct(S['f4_fold'], S['f4_opp'])}、对limp加注{_pct(S['iso'], S['vs_limp'])}",
             f"  翻牌：cbet{_pct(S['cb'], S['cb_opp'])}、面对cbet弃{_pct(S['fcb'], S['fcb_opp'])}/加注{_pct(S['rcb'], S['fcb_opp'])}、"
@@ -392,6 +401,34 @@ def walk(ev, hero_pos):
     return steps, prior, cur, c, base
 
 
+ACT = (("弃牌", "fold"), ("让牌", "check"), ("平跟", "limp"), ("跟注", "call"), ("全下", "allin"), ("加注", "raise"), ("下注", "bet"))
+
+
+def hand_detail(rec, table=None):
+    """一手的明细（写 players/<opp>/hands.jsonl）：原始记录（重建统计用）+ 逐个动作的位置/类型/注码（BB）。
+    acts[i] = {st 街, who me/opp, pos BTN/BB, act fold/check/limp/call/bet/raise/allin, add 本次投入, to 本街累计到,
+               pot 动作前底池, left 动作后剩余筹码（起始筹码未知时为 None）}"""
+    pos = rec.get("pos")
+    steps, prior, *_ = walk(rec.get("ev") or [], pos)
+    me_btn = pos == "BTN"
+    last = {"me": 1 if me_btn else 2, "opp": 2 if me_btn else 1}            # 盲注
+    start = rec.get("start") or {}
+    acts = []
+    for (s, who, txt, tot), (_, e) in zip(steps, rec.get("ev") or []):
+        a = next((v for k, v in ACT if k in e), "?")
+        street_base = (prior.get(s) or {}).get(who, 0)
+        acts.append({"st": EN[s], "who": who, "pos": (pos if who == "me" else OTHER.get(pos)) or "?", "act": a,
+                     "add": round((tot - last[who]) / 2, 1), "to": round((tot - street_base) / 2, 1),
+                     "pot": round((last["me"] + last["opp"]) / 2, 1),
+                     "left": None if start.get(who) is None else round(max(start[who] - tot, 0) / 2, 1)})
+        last[who] = max(last[who], tot)
+    d = {k: rec.get(k) for k in ("t", "n", "opp", "pos", "hero", "board", "ev", "how", "delta")}
+    if table: d["table"] = table
+    if start: d["start_bb"] = {k: round(v / 2, 1) for k, v in start.items() if v is not None}
+    d["acts"] = acts
+    return d
+
+
 def snapshot_bb(st, hist):
     """当前局面快照（BB 单位），只放决策需要的代码计算结果"""
     n, b = st.get("nums") or {}, st["buttons"]
@@ -439,15 +476,17 @@ def snapshot_bb(st, hist):
 class HandSession:
     """维护 session 模式的请求。build() 生成本次请求（本手完整记录，单条 user）；commit() 记下模型回复。"""
     def __init__(self, table_dir=None, opp=None, keep_hands=6, hands_log=None, on_hand_end=None, hero_name=None,
-                 history=None, population=None, warm=False, votes=3, log=print, store=None, store_write=False, hist_stats=None):
+                 history=None, population=None, warm=False, votes=3, log=print, store=None, store_write=False, hist_stats=None,
+                 players_dir=None):
         """history=该对手此前（跨桌）已结束的手 / hist_stats=其累计统计计数，热启动；population=其他对手的手，对手样本少时作群体参考（冷启动）。
         对手昵称由 see_opp() 从截图识别（多帧投票），识别到/换人后 warm=True 时后台加载该对手跨桌历史，下一手开始生效；
         opp 参数只是初始值（可为 None）。
-        store=对手库 OppDB：有它时历史统计/画像/群体参考按主键查库；store_write=True（仅真机）时每手追加 jsonl 后同步进库。"""
+        store=对手库 OppDB：有它时历史统计/画像/群体参考按主键查库；store_write=True（仅真机）时每手把明细追加到
+        players_dir/<opp>/hands.jsonl，并把这一手的计数直接加进库（不读 jsonl）。"""
         self.table_dir, self.opp, self.keep = table_dir, opp, keep_hands
         self.hist_S = hist_stats or (opp_stats(history) if history else None)
         self.prof = None                     # 对手库里的画像 {"profile","ptype"}
-        self.store, self.store_write = store, store_write
+        self.store, self.store_write, self.players_dir = store, store_write, players_dir
         self.pop = opp_stats(population) if population else (store.pop(opp) if store and warm else None)
         self.warm, self.need_votes, self.log = warm, votes, log
         self._votes, self._pending, self._loading, self._thread = [], None, None, None
@@ -534,9 +573,14 @@ class HandSession:
         if self.hands_log:
             Path(self.hands_log).parent.mkdir(parents=True, exist_ok=True)
             with open(self.hands_log, "a") as f: f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-        if self.store is not None and self.store_write and self.hands_log:
-            try: self.store.sync([self.hands_log])      # 只读刚追加的这一行，累计进该对手的统计
-            except Exception as e: self.log(f"[session] 写对手库失败: {type(e).__name__}: {e}")
+        if self.store_write and rec.get("opp"):
+            d = Path(self.players_dir or PLAYERS) / safe_name(rec["opp"])
+            d.mkdir(parents=True, exist_ok=True)
+            tb = Path(self.table_dir).name if self.table_dir else None
+            with open(d / "hands.jsonl", "a", encoding="utf-8") as f: f.write(json.dumps(hand_detail(rec, tb), ensure_ascii=False) + "\n")
+            if self.store is not None:
+                try: self.store.add_hands([rec])        # 这一手的计数直接加到该对手那一行（UPDATE n=n+1, vp=vp+…）
+                except Exception as e: self.log(f"[session] 写对手库失败: {type(e).__name__}: {e}")
         if self.on_hand_end:
             try: self.on_hand_end(rec, self)
             except Exception: pass
@@ -628,7 +672,7 @@ class HandSession:
         if delta is not None and abs(delta) > 400: line += "（变化过大，可能有补码或漏观察的手）"
         self.recent.append(line)
         rec = {"t": time.strftime("%Y-%m-%d %H:%M:%S"), "n": self.n_hands, "opp": self.opp, "pos": c["pos"], "hero": c["hero"],
-               "board": c["board"], "ev": ev, "how": how, "delta": delta, "msgs": self.msgs}
+               "board": c["board"], "ev": ev, "how": how, "delta": delta, "start": dict(c.get("start") or {}), "msgs": self.msgs}
         self.hands.append(rec)
         if self.opp is None: self._unwritten.append(rec)       # 对手未识别：等识别出来再写（补上 opp）
         else: self._emit(rec)

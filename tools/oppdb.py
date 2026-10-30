@@ -1,15 +1,15 @@
-"""对手库（SQLite）：每个对手一行——各项统计计数 + 画像摘要；识别到对手后按主键直接查库（约 0.06ms，不做热加载）做热/冷启动。
+"""对手库（SQLite）：每个对手一行——各项统计的计数器（分子、分母分开存）+ 画像摘要；识别到对手后按主键直接查库（不做热加载）。
 
-对局明细不进库，仍记在 jsonl（只追加）：tables/<桌>/bot_hands.jsonl（真机每手）、players/<opp>/hands.jsonl（tools/players.py 导入的回放手）。
-库只存从这些明细累计出来的结果：
   players  每个对手一行：key(主键，state.name_key(昵称)，容忍 OCR 的 0/O、l/1) / name / first_seen / last_seen /
-           统计计数列（session_prompt.STAT_FIELDS，n=累计手数；“X_opp”=机会数）/ profile(画像正文) / ptype(画像类型) / profile_mtime
-  player_rates 视图：把计数换算成百分比（VPIP、PFR、3B、4B、cbet…），直接 SELECT 查看
-  sources(path PK, offset) —— 每个 jsonl 已累计到的字节偏移：只读新追加的完整行，避免重扫 / 重复累计
+           计数列（session_prompt.STAT_FIELDS：n 手数、vp_n/vp 入池机会/入池、won 收池、net 净赢、b3/vs_open、cb/cb_opp…；
+           “X_opp”=机会数）/ profile(画像正文) / ptype(画像类型) / profile_mtime
+  player_rates 视图：计数换算成百分比（VPIP、PFR、收池率、3B、4B、cbet…），直接 SELECT 查看
   idx_players_last(last_seen) —— 按最近出现排序列对手
+每手结束（session 后台写线程）：add_hands([rec]) 把这一手算出的计数直接加到该对手那一行
+（INSERT … ON CONFLICT DO UPDATE SET n=n+1, vp=vp+…），不读 jsonl、不扫全表。
+对局明细不进库：players/<opp>/hands.jsonl（只追加，每手的行动线 + 逐个动作的位置/类型/注码，见 session_prompt.hand_detail）。
+jsonl 只在重建时读：表结构改了就升 VERSION，打开旧库（或库文件丢了）时清空，open_db 再从 jsonl 全量重算。
 群体参考 = SUM(全体) − 该对手（计数可加减；合计第一次查询时 SUM 一次，之后随写入增量维护）。
-真机每手结束：session 后台写线程先把这一手追加到 bot_hands.jsonl，再 sync 该文件（只读刚追加的那一行）。
-表结构改了就升 VERSION：打开旧库时清空重建，再从 jsonl 全量累计（明细都在 jsonl 里，不丢数据）。
 """
 import json, sqlite3, threading, time
 from pathlib import Path
@@ -18,11 +18,11 @@ import state as wpstate
 
 ROOT = Path(__file__).resolve().parent.parent
 DB = ROOT / "players" / "opponents.db"
-VERSION = 2
+VERSION = 3
 
 # player_rates 视图：列名 -> (分子, 分母)
 RATES = (
-    ("vpip", "vp", "vp_n"), ("pfr", "pfr", "vp_n"), ("open", "open", "btn"), ("limp", "limp", "btn"),
+    ("won", "won", "n"), ("vp_won", "vp_won", "vp"), ("vpip", "vp", "vp_n"), ("pfr", "pfr", "vp_n"), ("open", "open", "btn"), ("limp", "limp", "btn"),
     ("b3", "b3", "vs_open"), ("b4", "b4", "f3_opp"), ("bb_fold_vs_open", "bb_fold", "vs_open"),
     ("fold_to_3b", "f3_fold", "f3_opp"), ("fold_to_4b", "f4_fold", "f4_opp"), ("iso_vs_limp", "iso", "vs_limp"),
     ("cbet_flop", "cb", "cb_opp"), ("cbet_turn", "cb2", "cb2_opp"), ("fold_to_cbet", "fcb", "fcb_opp"),
@@ -54,12 +54,13 @@ class OppDB:
         self.cols = ("key", "name", "first_seen", "last_seen") + self.keys + ("profile", "ptype", "profile_mtime")
         self.conn = sqlite3.connect(str(self.path), check_same_thread=False, isolation_level=None)
         self.conn.execute("PRAGMA journal_mode=WAL"); self.conn.execute("PRAGMA synchronous=NORMAL")
-        self._schema()
+        self.fresh = self._schema()           # True=新建/升级后的空库，open_db 会从 jsonl 重建
         self.synced, self.sync_ms = 0, None
         self._sum = None                      # 全体计数合计：第一次 pop() 时 SUM 一次，之后随写入增量维护（只这一组数，不是热加载）
 
     def _schema(self):
-        if self.conn.execute("PRAGMA user_version").fetchone()[0] != VERSION:        # 旧结构：清空，之后 sync 从 jsonl 重建
+        fresh = self.conn.execute("PRAGMA user_version").fetchone()[0] != VERSION
+        if fresh:                                                                     # 新库/旧结构：清空，之后从 jsonl 重建
             self.conn.executescript("DROP VIEW IF EXISTS player_rates; DROP TABLE IF EXISTS players; "
                                     "DROP TABLE IF EXISTS agg; DROP TABLE IF EXISTS sources;")
         desc = dict(_P().STAT_FIELDS)
@@ -75,12 +76,13 @@ CREATE TABLE IF NOT EXISTS players(
   ptype TEXT,                -- 画像「类型：」一行
   profile_mtime REAL NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS idx_players_last ON players(last_seen);
-CREATE TABLE IF NOT EXISTS sources(path TEXT PRIMARY KEY, offset INTEGER NOT NULL DEFAULT 0);
 CREATE VIEW IF NOT EXISTS player_rates AS SELECT key, name, n AS hands, last_seen,
   {rates},
-  ROUND(1.0 * agg / NULLIF(calls, 0), 2) AS af
+  ROUND(1.0 * agg / NULLIF(calls, 0), 2) AS af,
+  ROUND(50.0 * net / NULLIF(n, 0), 1) AS bb100
 FROM players;
 PRAGMA user_version = {VERSION};""")
+        return fresh
 
     def close(self):
         with self.lock: self.conn.close()
@@ -96,61 +98,56 @@ PRAGMA user_version = {VERSION};""")
         r = self.conn.execute(f"SELECT {','.join(self.cols)} FROM players WHERE key=?", (k,)).fetchone()
         return self._to_dict(r) if r else None
 
-    def _put(self, d):
-        if self._sum is not None:
-            old = self._row(d["key"])
-            self._sum = add_stats(sub_stats(self._sum, old["stats"]) if old else self._sum, d["stats"] or {})
-        vals = dict(d, **{k: (d["stats"] or {}).get(k, 0) for k in self.keys})
-        self.conn.execute(f"INSERT OR REPLACE INTO players({','.join(self.cols)}) VALUES({','.join('?' * len(self.cols))})",
-                          tuple(vals[c] for c in self.cols))
-
-    def _new(self, k, name):
-        return {"key": k, "name": name, "first_seen": None, "last_seen": None, "stats": None,
-                "profile": None, "ptype": None, "profile_mtime": 0}
+    def _ensure(self, k, name):
+        self.conn.execute("INSERT OR IGNORE INTO players(key, name) VALUES(?, ?)", (k, name))
 
     # ---- 写 ----
     def add_hands(self, hands):
-        """把一批手（jsonl 记录）累计进各对手的行；没有 opp 的跳过。返回累计的手数"""
+        """把一批手（记录：opp/pos/ev/board/how/delta/t）的计数加到各对手那一行（一条 UPSERT，不读旧值）；没有 opp 的跳过。返回手数"""
         P, groups = _P(), {}
         for h in hands:
             if h.get("opp"): groups.setdefault(wpstate.name_key(h["opp"]), []).append(h)
-        for k, hs in groups.items():
-            d = self._row(k) or self._new(k, hs[-1]["opp"])
-            ts = [h.get("t") for h in hs if h.get("t")]
-            if ts:
-                d["first_seen"] = min([d["first_seen"]] + ts) if d["first_seen"] else min(ts)
-                d["last_seen"] = max([d["last_seen"] or ""] + ts)
-            d["stats"] = add_stats(d["stats"], P.opp_stats(hs))
-            self._put(d)
+        if not groups: return 0
+        cols = ("key", "name", "first_seen", "last_seen") + self.keys
+        sql = (f"INSERT INTO players({','.join(cols)}) VALUES({','.join('?' * len(cols))}) ON CONFLICT(key) DO UPDATE SET "
+               "name=excluded.name, "
+               "first_seen=COALESCE(MIN(first_seen, excluded.first_seen), first_seen, excluded.first_seen), "
+               "last_seen=COALESCE(MAX(last_seen, excluded.last_seen), last_seen, excluded.last_seen), "
+               + ", ".join(f"{k}={k}+excluded.{k}" for k in self.keys))
+        with self.lock:
+            own = not self.conn.in_transaction
+            if own: self.conn.execute("BEGIN")
+            try:
+                for k, hs in groups.items():
+                    S, ts = P.opp_stats(hs), [h["t"] for h in hs if h.get("t")]
+                    self.conn.execute(sql, (k, hs[-1]["opp"], min(ts) if ts else None, max(ts) if ts else None) + tuple(S[c] for c in self.keys))
+                    if self._sum is not None: self._sum = add_stats(self._sum, S)
+                if own: self.conn.execute("COMMIT")
+            except Exception:
+                if own: self.conn.execute("ROLLBACK")
+                self._sum = None; raise
         return sum(map(len, groups.values()))
 
-    def sync(self, files):
-        """增量累计：每个 jsonl 只读上次位置之后新追加的完整行（文件变短视为重写，从头读）。偏移与统计在同一事务里提交。"""
-        n = 0
+    def rebuild(self, files):
+        """清空所有计数，从明细 jsonl 全量重算（jsonl 每行一手，导入时已去重）；画像列保留。返回累计的手数"""
+        rows = []
         for f in map(Path, files):
             if not f.exists(): continue
-            key, size = str(f.resolve()), f.stat().st_size
-            with self.lock:
-                r = self.conn.execute("SELECT offset FROM sources WHERE path=?", (key,)).fetchone()
-                off = r[0] if r else 0
-                if size < off: off = 0
-                if size == off: continue
-                with open(f, "rb") as fh:
-                    fh.seek(off); data = fh.read()
-                end = data.rfind(b"\n") + 1               # 最后一行可能还在写，只取到最后一个换行
-                if not end: continue
-                rows = []
-                for l in data[:end].decode("utf-8", "replace").splitlines():
-                    try: rows.append(json.loads(l))
-                    except ValueError: pass
-                self.conn.execute("BEGIN")
-                try:
-                    n += self.add_hands(rows)
-                    self.conn.execute("INSERT INTO sources(path,offset) VALUES(?,?) ON CONFLICT(path) DO UPDATE SET offset=excluded.offset",
-                                      (key, off + end))
-                    self.conn.execute("COMMIT")
-                except Exception:
-                    self.conn.execute("ROLLBACK"); self._sum = None; raise
+            for l in f.read_text(encoding="utf-8").splitlines():
+                try: rows.append(json.loads(l))
+                except ValueError: pass
+        rows.sort(key=lambda h: h.get("t") or "")
+        with self.lock:
+            self.conn.execute("BEGIN")
+            try:
+                self.conn.execute("UPDATE players SET first_seen=NULL, last_seen=NULL, " + ", ".join(f"{k}=0" for k in self.keys))
+                self._sum = None
+                n = self.add_hands(rows)
+                self.conn.execute("DELETE FROM players WHERE n=0 AND profile IS NULL")
+                self.conn.execute("COMMIT")
+            except Exception:
+                self.conn.execute("ROLLBACK"); self._sum = None; raise
+        self.fresh = False
         return n
 
     def sync_profiles(self, files):
@@ -163,11 +160,13 @@ PRAGMA user_version = {VERSION};""")
         n = 0
         with self.lock:
             for k, (f, m) in best.items():
-                d = self._row(k) or self._new(k, f.stem)
-                if m <= d["profile_mtime"]: continue
+                r = self.conn.execute("SELECT profile_mtime FROM players WHERE key=?", (k,)).fetchone()
+                if r and m <= r[0]: continue
                 t = f.read_text(encoding="utf-8")
-                d.update(profile=P.profile_text(t), ptype=P.profile_type(t), profile_mtime=m)
-                self._put(d); n += 1
+                self._ensure(k, f.stem)
+                self.conn.execute("UPDATE players SET profile=?, ptype=?, profile_mtime=? WHERE key=?",
+                                  (P.profile_text(t), P.profile_type(t), m, k))
+                n += 1
         return n
 
     # ---- 读（直接查库，主键索引） ----
@@ -208,10 +207,10 @@ PRAGMA user_version = {VERSION};""")
 
 
 def open_db(hand_files=(), profile_files=(), path=DB):
-    """启动用：打开库 → 增量累计 jsonl 新增行、刷新画像（不做热加载，之后按需查库）"""
+    """启动用：打开库（新库/结构升级时从明细 jsonl 重建，平时不读 jsonl）→ 刷新画像（不做热加载，之后按需查库）"""
     t0 = time.time()
     db = OppDB(path)
-    db.synced = db.sync(hand_files)
+    db.synced = db.rebuild(hand_files) if db.fresh else 0
     db.sync_profiles(profile_files)
     db.sync_ms = (time.time() - t0) * 1000
     return db

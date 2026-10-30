@@ -1,0 +1,16 @@
+# player.log —— 本桌手牌行动记录，按时间顺序追加
+# 格式说明见 tables/README.md；单位：BB
+
+=== HAND #0001 | 2026-10-29 18:30 | NL2 6max | BTN=S4 ===
+SEATS: S1 Alice 100 | S2 Bob_88 152 | S3 Hero 100 | S4 Carl 87 | S5 Dana 100 | S6 Eve 230
+HERO: S3 [Ah Kd]
+POST: S5(SB) post 0.5; S6(BB) post 1
+PREFLOP: S1(UTG) fold; S2(HJ) raise 2.5; S3(CO) raise 8; S4(BTN) fold; S5(SB) fold; S6(BB) fold; S2(HJ) call 8
+FLOP [Ks 7d 2c] pot=17.5: S2(HJ) check; S3(CO) bet 6; S2(HJ) call 6
+TURN [Ks 7d 2c 9h] pot=29.5: S2(HJ) check; S3(CO) bet 20; S2(HJ) raise 60; S3(CO) call 60
+RIVER [Ks 7d 2c 9h 3s] pot=149.5: S2(HJ) allin 78; S3(CO) call 26 (allin)
+SHOWDOWN: S2 [9s 9d] 三条9; S3 [Ah Kd] 一对K
+RESULT: S2 wins 201.5（未被跟注的 52 退回 S2）
+TAGS: S2:vpip,pfr,f3bet_opp,fcbet_opp,call,raise,bet,sawflop,wtsd,wsd; S3:vpip,pfr,3bet_opp,3bet,cbet_opp,cbet,bet,call,sawflop,wtsd; S4:steal_opp; S5:3bet_opp; S6:3bet_opp
+NOTES: S2 转牌过牌-加注 = 强牌（3-bet 底池中平跟 + 过牌加注，范围极强）；长考约 10 秒后加注。
+

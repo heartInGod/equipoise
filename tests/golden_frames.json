@@ -1,0 +1,2297 @@
+{
+"model_test/live/000010_001_other.raw": {
+"screen": "other",
+"hero": "Td Kc",
+"board": "",
+"buttons": [],
+"presets": [],
+"pot": null,
+"to_call": 0,
+"my_stack": 202,
+"opp_stack": 198,
+"dealer": "me"
+},
+"model_test/live/000012_002_other.raw": {
+"screen": "other",
+"hero": "Js 4c",
+"board": "",
+"buttons": [
+"让或弃",
+"让牌"
+],
+"presets": [],
+"pot": 3,
+"to_call": 0,
+"my_stack": 200,
+"opp_stack": 197,
+"dealer": "opp"
+},
+"model_test/live/000016_003_my_turn.raw": {
+"screen": "my_turn",
+"hero": "Js 4c",
+"board": "",
+"buttons": [
+"加注",
+"弃牌",
+"让牌"
+],
+"presets": [
+"2BB=None",
+"3BB=8",
+"4BB=10",
+"5BB=12",
+"6BB=14"
+],
+"pot": 4,
+"to_call": 0,
+"my_stack": 200,
+"opp_stack": 196,
+"dealer": "opp"
+},
+"model_test/live/000017_004_my_turn.raw": {
+"screen": "anim",
+"hero": "",
+"board": "4d Ad",
+"buttons": [
+"下注",
+"弃牌",
+"让牌"
+],
+"presets": [
+"1/3=None",
+"1/2=None",
+"2/3=None",
+"1=None",
+"1.2=None"
+],
+"pot": 4,
+"to_call": 0,
+"my_stack": 200,
+"opp_stack": 196,
+"dealer": "opp"
+},
+"model_test/live/000019_005_my_turn.raw": {
+"screen": "my_turn",
+"hero": "Js 4c",
+"board": "4d Ad Kd",
+"buttons": [
+"下注",
+"弃牌",
+"让牌"
+],
+"presets": [
+"1/3=None",
+"1/2=2",
+"2/3=2",
+"1=4",
+"1.2=4"
+],
+"pot": 4,
+"to_call": 0,
+"my_stack": 200,
+"opp_stack": 196,
+"dealer": "opp"
+},
+"model_test/live/000021_006_other.raw": {
+"screen": "other",
+"hero": "Js 4c",
+"board": "4d Ad Kd",
+"buttons": [
+"让牌"
+],
+"presets": [],
+"pot": 4,
+"to_call": 0,
+"my_stack": 200,
+"opp_stack": 196,
+"dealer": "opp"
+},
+"model_test/live/000023_007_other.raw": {
+"screen": "other",
+"hero": "Js 4c",
+"board": "4d Ad Kd",
+"buttons": [
+"让或弃",
+"让牌"
+],
+"presets": [],
+"pot": 4,
+"to_call": 0,
+"my_stack": 200,
+"opp_stack": 196,
+"dealer": "opp"
+},
+"model_test/live/000025_008_my_turn.raw": {
+"screen": "my_turn",
+"hero": "Js 4c",
+"board": "4d Ad Kd Kc",
+"buttons": [
+"下注",
+"弃牌",
+"让牌"
+],
+"presets": [
+"1/3=None",
+"1/2=2",
+"2/3=2",
+"1=4",
+"1.2=4"
+],
+"pot": 4,
+"to_call": 0,
+"my_stack": 200,
+"opp_stack": 196,
+"dealer": "opp"
+},
+"model_test/live/000030_009_other.raw": {
+"screen": "other",
+"hero": "Js 4c",
+"board": "4d Ad Kd Kc",
+"buttons": [
+"让或弃",
+"让牌"
+],
+"presets": [],
+"pot": 4,
+"to_call": 0,
+"my_stack": 200,
+"opp_stack": 196,
+"dealer": "opp"
+},
+"model_test/live/000032_010_my_turn.raw": {
+"screen": "my_turn",
+"hero": "Js 4c",
+"board": "4d Ad Kd Kc Qd",
+"buttons": [
+"下注",
+"弃牌",
+"让牌"
+],
+"presets": [
+"1/3=None",
+"1/2=2",
+"2/3=2",
+"1=4",
+"1.2=4"
+],
+"pot": 4,
+"to_call": 0,
+"my_stack": 200,
+"opp_stack": 196,
+"dealer": "opp"
+},
+"model_test/live/000043_011_other.raw": {
+"screen": "other",
+"hero": "Js 4c",
+"board": "4d Ad Kd Kc Qd",
+"buttons": [
+"让或弃",
+"让牌"
+],
+"presets": [],
+"pot": 4,
+"to_call": 0,
+"my_stack": 200,
+"opp_stack": 196,
+"dealer": "opp"
+},
+"model_test/live/000045_012_other.raw": {
+"screen": "other",
+"hero": "4c",
+"board": "4d Ad Kd Kc Qd",
+"buttons": [],
+"presets": [],
+"pot": 4,
+"to_call": 0,
+"my_stack": 200,
+"opp_stack": 196,
+"dealer": "opp"
+},
+"model_test/live/000047_013_other.raw": {
+"screen": "other",
+"hero": "4c",
+"board": "4d Ad Kd Kc",
+"buttons": [],
+"presets": [],
+"pot": null,
+"to_call": 0,
+"my_stack": 204,
+"opp_stack": 196,
+"dealer": "opp"
+},
+"model_test/live/000051_014_my_turn.raw": {
+"screen": "my_turn",
+"hero": "3c Qh",
+"board": "",
+"buttons": [
+"加注",
+"弃牌",
+"跟注"
+],
+"presets": [
+"2BB=4",
+"3BB=6",
+"4BB=None",
+"5BB=10",
+"6BB=12"
+],
+"pot": 3,
+"to_call": 1,
+"my_stack": 203,
+"opp_stack": 194,
+"dealer": "me"
+},
+"model_test/live/000053_015_other.raw": {
+"screen": "other",
+"hero": "3c Qh",
+"board": "",
+"buttons": [
+"让或弃",
+"让牌",
+"跟注"
+],
+"presets": [],
+"pot": 4,
+"to_call": 0,
+"my_stack": 202,
+"opp_stack": 194,
+"dealer": "me"
+},
+"model_test/live/000055_016_other.raw": {
+"screen": "other",
+"hero": "3c Qh",
+"board": "Qd",
+"buttons": [],
+"presets": [],
+"pot": 4,
+"to_call": 0,
+"my_stack": 202,
+"opp_stack": 194,
+"dealer": "me"
+},
+"model_test/live/000057_017_other.raw": {
+"screen": "other",
+"hero": "3c Qh",
+"board": "Qd 7c Qc",
+"buttons": [
+"让或弃",
+"让牌"
+],
+"presets": [],
+"pot": 4,
+"to_call": 0,
+"my_stack": 202,
+"opp_stack": 194,
+"dealer": "me"
+},
+"model_test/live/000059_018_my_turn.raw": {
+"screen": "my_turn",
+"hero": "3c Qh",
+"board": "Qd 7c Qc",
+"buttons": [
+"下注",
+"弃牌",
+"让牌"
+],
+"presets": [
+"1/3=None",
+"1/2=2",
+"2/3=2",
+"1=4",
+"1.2=4"
+],
+"pot": 4,
+"to_call": 0,
+"my_stack": 202,
+"opp_stack": 194,
+"dealer": "me"
+},
+"model_test/live/000100_019_other.raw": {
+"screen": "other",
+"hero": "3c Qh",
+"board": "Qd 7c Qc 2d",
+"buttons": [
+"让或弃",
+"让牌"
+],
+"presets": [],
+"pot": 4,
+"to_call": 0,
+"my_stack": 202,
+"opp_stack": 194,
+"dealer": "me"
+},
+"model_test/live/000105_020_other.raw": {
+"screen": "other",
+"hero": "3c Qh",
+"board": "Qd 7c Qc 2d",
+"buttons": [],
+"presets": [],
+"pot": 12,
+"to_call": 0,
+"my_stack": 198,
+"opp_stack": 190,
+"dealer": "me"
+},
+"model_test/live/000107_021_other.raw": {
+"screen": "other",
+"hero": "3c Qh",
+"board": "Qd 7c Qc 2d Ad",
+"buttons": [
+"让或弃",
+"让牌"
+],
+"presets": [],
+"pot": 12,
+"to_call": 0,
+"my_stack": 198,
+"opp_stack": 190,
+"dealer": "opp"
+},
+"model_test/live/000110_022_other.raw": {
+"screen": "other",
+"hero": "3c Qh",
+"board": "Qd 7c Qc 2d Ad",
+"buttons": [],
+"presets": [],
+"pot": 12,
+"to_call": 0,
+"my_stack": 198,
+"opp_stack": 190,
+"dealer": "me"
+},
+"model_test/live/000112_023_my_turn.raw": {
+"screen": "my_turn",
+"hero": "3c Qh",
+"board": "Qd 7c Qc 2d Ad",
+"buttons": [
+"加注",
+"弃牌",
+"跟注"
+],
+"presets": [
+"1/3=17",
+"1/2=22",
+"2/3=26",
+"1=36",
+"1.2=41"
+],
+"pot": 20,
+"to_call": 8,
+"my_stack": 198,
+"opp_stack": 182,
+"dealer": "me"
+},
+"model_test/live/000118_024_other.raw": {
+"screen": "other",
+"hero": "3c Qh",
+"board": "Qd 7c Qc 2d Ad",
+"buttons": [],
+"presets": [],
+"pot": 28,
+"to_call": 0,
+"my_stack": 190,
+"opp_stack": 182,
+"dealer": "me"
+},
+"model_test/live/000119_025_other.raw": {
+"screen": "other",
+"hero": "3c Qh",
+"board": "Qd 2d Ad",
+"buttons": [],
+"presets": [],
+"pot": null,
+"to_call": 0,
+"my_stack": 190,
+"opp_stack": null,
+"dealer": "me"
+},
+"model_test/live/000123_026_other.raw": {
+"screen": "other",
+"hero": "",
+"board": "",
+"buttons": [],
+"presets": [],
+"pot": 3,
+"to_call": 0,
+"my_stack": 188,
+"opp_stack": 209,
+"dealer": "opp"
+},
+"model_test/live/000125_027_other.raw": {
+"screen": "other",
+"hero": "Kc 5c",
+"board": "",
+"buttons": [
+"让或弃",
+"让牌"
+],
+"presets": [],
+"pot": 3,
+"to_call": 0,
+"my_stack": 188,
+"opp_stack": 209,
+"dealer": "opp"
+},
+"model_test/live/000128_028_my_turn.raw": {
+"screen": "my_turn",
+"hero": "Kc 5c",
+"board": "",
+"buttons": [
+"加注",
+"弃牌",
+"让牌"
+],
+"presets": [
+"2BB=None",
+"3BB=8",
+"4BB=10",
+"5BB=12",
+"6BB=14"
+],
+"pot": 4,
+"to_call": 0,
+"my_stack": 188,
+"opp_stack": 208,
+"dealer": "opp"
+},
+"model_test/live/000130_029_my_turn.raw": {
+"screen": "my_turn",
+"hero": "Kc 5c",
+"board": "8d 3h 9h",
+"buttons": [
+"下注",
+"弃牌",
+"让牌"
+],
+"presets": [
+"1/3=None",
+"1/2=2",
+"2/3=2",
+"1=4",
+"1.2=4"
+],
+"pot": 4,
+"to_call": 0,
+"my_stack": 188,
+"opp_stack": 208,
+"dealer": "opp"
+},
+"model_test/live/000134_030_other.raw": {
+"screen": "other",
+"hero": "Kc 5c",
+"board": "8d 3h 9h",
+"buttons": [
+"让牌"
+],
+"presets": [],
+"pot": 4,
+"to_call": 0,
+"my_stack": 188,
+"opp_stack": 208,
+"dealer": "opp"
+},
+"model_test/live/000136_031_other.raw": {
+"screen": "other",
+"hero": "Kc 5c",
+"board": "8d 3h 9h",
+"buttons": [
+"让或弃",
+"让牌"
+],
+"presets": [],
+"pot": 4,
+"to_call": 0,
+"my_stack": 188,
+"opp_stack": 208,
+"dealer": "opp"
+},
+"model_test/live/000138_032_my_turn.raw": {
+"screen": "my_turn",
+"hero": "Kc 5c",
+"board": "8d 3h 9h 7s",
+"buttons": [
+"下注",
+"弃牌",
+"让牌"
+],
+"presets": [
+"1/3=None",
+"1/2=2",
+"2/3=2",
+"1=4",
+"1.2=4"
+],
+"pot": 4,
+"to_call": 0,
+"my_stack": 188,
+"opp_stack": 208,
+"dealer": "opp"
+},
+"model_test/live/000148_033_other.raw": {
+"screen": "other",
+"hero": "Kc 5c",
+"board": "8d 3h 9h 7s",
+"buttons": [
+"让或弃",
+"让牌"
+],
+"presets": [],
+"pot": 4,
+"to_call": 0,
+"my_stack": 188,
+"opp_stack": 208,
+"dealer": "opp"
+},
+"model_test/live/000150_034_other.raw": {
+"screen": "other",
+"hero": "Kc 5c",
+"board": "8d 3h 9h 7s",
+"buttons": [],
+"presets": [],
+"pot": 4,
+"to_call": 0,
+"my_stack": 188,
+"opp_stack": 208,
+"dealer": "opp"
+},
+"model_test/live/000152_035_my_turn.raw": {
+"screen": "my_turn",
+"hero": "Kc 5c",
+"board": "8d 3h 9h 7s 6s",
+"buttons": [
+"下注",
+"弃牌",
+"让牌"
+],
+"presets": [
+"1/3=None",
+"1/2=2",
+"2/3=2",
+"1=4",
+"1.2=4"
+],
+"pot": 4,
+"to_call": 0,
+"my_stack": 188,
+"opp_stack": 208,
+"dealer": "opp"
+},
+"model_test/live/000158_036_other.raw": {
+"screen": "other",
+"hero": "Kc 5c",
+"board": "8d 3h 9h 7s 6s",
+"buttons": [
+"让或弃",
+"让牌"
+],
+"presets": [],
+"pot": 4,
+"to_call": 0,
+"my_stack": 188,
+"opp_stack": 208,
+"dealer": "opp"
+},
+"model_test/live/000200_037_other.raw": {
+"screen": "other",
+"hero": "5c",
+"board": "8d 3h 9h 7s 6s",
+"buttons": [],
+"presets": [],
+"pot": 4,
+"to_call": 0,
+"my_stack": 188,
+"opp_stack": 208,
+"dealer": "opp"
+},
+"model_test/live/000202_038_other.raw": {
+"screen": "other",
+"hero": "5c",
+"board": "8d 9h 7s 6s",
+"buttons": [],
+"presets": [],
+"pot": null,
+"to_call": 0,
+"my_stack": 192,
+"opp_stack": 208,
+"dealer": "opp"
+},
+"model_test/live/000207_039_my_turn.raw": {
+"screen": "my_turn",
+"hero": "4h 7d",
+"board": "",
+"buttons": [
+"加注",
+"弃牌",
+"跟注"
+],
+"presets": [
+"2BB=4",
+"3BB=6",
+"4BB=8",
+"5BB=10",
+"6BB=12"
+],
+"pot": 3,
+"to_call": 1,
+"my_stack": 191,
+"opp_stack": 206,
+"dealer": "me"
+},
+"model_test/live/000222_040_other.raw": {
+"screen": "other",
+"hero": "",
+"board": "",
+"buttons": [
+"弃牌"
+],
+"presets": [],
+"pot": 3,
+"to_call": 0,
+"my_stack": 191,
+"opp_stack": 206,
+"dealer": "me"
+},
+"model_test/live/000227_041_other.raw": {
+"screen": "other",
+"hero": "7c 8d",
+"board": "",
+"buttons": [
+"让或弃",
+"让牌"
+],
+"presets": [],
+"pot": 3,
+"to_call": 0,
+"my_stack": 189,
+"opp_stack": 208,
+"dealer": "opp"
+},
+"model_test/live/000236_042_my_turn.raw": {
+"screen": "anim",
+"hero": "",
+"board": "",
+"buttons": [
+"加注",
+"弃牌",
+"让牌"
+],
+"presets": [
+"2BB=None",
+"3BB=None",
+"4BB=None",
+"5BB=None",
+"6BB=None"
+],
+"pot": 3,
+"to_call": 0,
+"my_stack": 189,
+"opp_stack": 28,
+"dealer": "opp"
+},
+"model_test/live/000238_043_my_turn.raw": {
+"screen": "my_turn",
+"hero": "7c 8d",
+"board": "",
+"buttons": [
+"加注",
+"弃牌",
+"让牌"
+],
+"presets": [
+"2BB=6",
+"3BB=8",
+"4BB=10",
+"5BB=12",
+"6BB=14"
+],
+"pot": 4,
+"to_call": 0,
+"my_stack": 189,
+"opp_stack": 207,
+"dealer": "opp"
+},
+"model_test/live/000245_044_other.raw": {
+"screen": "other",
+"hero": "7c 8d",
+"board": "Qd",
+"buttons": [],
+"presets": [],
+"pot": 4,
+"to_call": 0,
+"my_stack": 189,
+"opp_stack": 207,
+"dealer": "opp"
+},
+"model_test/live/000247_045_my_turn.raw": {
+"screen": "my_turn",
+"hero": "7c 8d",
+"board": "Qd Jc Jd",
+"buttons": [
+"下注",
+"弃牌",
+"让牌"
+],
+"presets": [
+"1/3=None",
+"1/2=2",
+"2/3=2",
+"1=4",
+"1.2=4"
+],
+"pot": 4,
+"to_call": 0,
+"my_stack": 189,
+"opp_stack": 207,
+"dealer": "opp"
+},
+"model_test/live/000249_046_my_turn.raw": {
+"screen": "my_turn",
+"hero": "7c 8d",
+"board": "Qd Jc Jd",
+"buttons": [
+"下注",
+"弃牌",
+"让牌"
+],
+"presets": [
+"1/3=None",
+"1/2=2",
+"2/3=2",
+"1=4",
+"1.2=4"
+],
+"pot": 4,
+"to_call": 0,
+"my_stack": 189,
+"opp_stack": 207,
+"dealer": "opp"
+},
+"model_test/live/000257_047_other.raw": {
+"screen": "other",
+"hero": "7c 8d",
+"board": "Qd Jc Jd",
+"buttons": [
+"让或弃",
+"让牌"
+],
+"presets": [],
+"pot": 4,
+"to_call": 0,
+"my_stack": 189,
+"opp_stack": 207,
+"dealer": "opp"
+},
+"model_test/live/000259_048_my_turn.raw": {
+"screen": "my_turn",
+"hero": "7c 8d",
+"board": "Qd Jc Jd",
+"buttons": [
+"加注",
+"弃牌",
+"跟注"
+],
+"presets": [
+"1/3=4",
+"1/2=6",
+"2/3=7",
+"1=10",
+"1.2=11"
+],
+"pot": 6,
+"to_call": 2,
+"my_stack": 189,
+"opp_stack": 205,
+"dealer": "opp"
+},
+"model_test/live/000305_049_other.raw": {
+"screen": "other",
+"hero": "",
+"board": "Qd Jc Jd",
+"buttons": [
+"弃牌"
+],
+"presets": [],
+"pot": 6,
+"to_call": 0,
+"my_stack": 189,
+"opp_stack": 205,
+"dealer": "opp"
+},
+"model_test/live/000310_050_my_turn.raw": {
+"screen": "my_turn",
+"hero": "Qc 3c",
+"board": "",
+"buttons": [
+"加注",
+"弃牌",
+"跟注"
+],
+"presets": [
+"2BB=4",
+"3BB=6",
+"4BB=None",
+"5BB=10",
+"6BB=12"
+],
+"pot": 3,
+"to_call": 1,
+"my_stack": 188,
+"opp_stack": 209,
+"dealer": "me"
+},
+"model_test/live/000325_051_other.raw": {
+"screen": "other",
+"hero": "",
+"board": "",
+"buttons": [
+"弃牌"
+],
+"presets": [],
+"pot": 3,
+"to_call": 0,
+"my_stack": 188,
+"opp_stack": 209,
+"dealer": "me"
+},
+"model_test/live/003711_away.raw": {
+"screen": "away",
+"hero": "",
+"board": "",
+"buttons": [
+"回到牌桌",
+"离开"
+],
+"presets": [],
+"pot": 3,
+"to_call": 0,
+"my_stack": 366,
+"opp_stack": 631,
+"dealer": "me"
+},
+"model_test/live/004017_waiting.raw": {
+"screen": "waiting",
+"hero": "",
+"board": "",
+"buttons": [
+"邀请好友"
+],
+"presets": [],
+"pot": null,
+"to_call": 0,
+"my_stack": null,
+"opp_stack": null,
+"dealer": null
+},
+"model_test/live/004031_can_start.raw": {
+"screen": "can_start",
+"hero": "",
+"board": "",
+"buttons": [
+"开始游戏"
+],
+"presets": [],
+"pot": null,
+"to_call": 0,
+"my_stack": null,
+"opp_stack": 200,
+"dealer": null
+},
+"model_test/live/004351_profile.raw": {
+"screen": "profile",
+"hero": "",
+"board": "",
+"buttons": [
+"弃牌"
+],
+"presets": [],
+"pot": null,
+"to_call": 0,
+"my_stack": 404,
+"opp_stack": 396,
+"dealer": "opp"
+},
+"model_test/live/004426_profile.raw": {
+"screen": "profile",
+"hero": "",
+"board": "",
+"buttons": [
+"弃牌"
+],
+"presets": [],
+"pot": null,
+"to_call": 0,
+"my_stack": 400,
+"opp_stack": 400,
+"dealer": "opp"
+},
+"model_test/live/004558_runit.raw": {
+"screen": "runit",
+"hero": "",
+"board": "",
+"buttons": [
+"All in",
+"发两次",
+"直接发牌"
+],
+"presets": [],
+"pot": 800,
+"to_call": null,
+"my_stack": null,
+"opp_stack": null,
+"dealer": null
+},
+"model_test/live/004722_runit.raw": {
+"screen": "runit",
+"hero": "",
+"board": "",
+"buttons": [
+"下注",
+"发两次",
+"直接发牌"
+],
+"presets": [],
+"pot": 316,
+"to_call": 0,
+"my_stack": 484,
+"opp_stack": null,
+"dealer": null
+},
+"model_test/live/004930_runit.raw": {
+"screen": "runit",
+"hero": "",
+"board": "",
+"buttons": [
+"All in",
+"发两次",
+"直接发牌"
+],
+"presets": [],
+"pot": 1800,
+"to_call": null,
+"my_stack": null,
+"opp_stack": null,
+"dealer": null
+},
+"model_test/live/005439_runit.raw": {
+"screen": "runit",
+"hero": "",
+"board": "",
+"buttons": [
+"All in",
+"发两次",
+"直接发牌"
+],
+"presets": [],
+"pot": 906,
+"to_call": null,
+"my_stack": null,
+"opp_stack": 894,
+"dealer": null
+},
+"model_test/live/000520_my_turn.raw": {
+"screen": "my_turn",
+"hero": "Tc Kh",
+"board": "As 7h 9d 6d Kd",
+"buttons": [
+"加注",
+"弃牌",
+"跟注"
+],
+"presets": [
+"1/3=24",
+"1/2=30",
+"2/3=35",
+"1=46",
+"1.2=52"
+],
+"pot": 24,
+"to_call": 8,
+"my_stack": 180,
+"opp_stack": 196,
+"dealer": "opp"
+},
+"model_test/live/000651_my_turn.raw": {
+"screen": "my_turn",
+"hero": "8h 3h",
+"board": "",
+"buttons": [
+"加注",
+"弃牌",
+"让牌"
+],
+"presets": [
+"2BB=None",
+"3BB=8",
+"4BB=10",
+"5BB=12",
+"6BB=14"
+],
+"pot": 4,
+"to_call": 0,
+"my_stack": 223,
+"opp_stack": 573,
+"dealer": "opp"
+},
+"model_test/live/000819_my_turn.raw": {
+"screen": "my_turn",
+"hero": "9d Qh",
+"board": "",
+"buttons": [
+"加注",
+"弃牌",
+"让牌"
+],
+"presets": [
+"2BB=None",
+"3BB=8",
+"4BB=10",
+"5BB=12",
+"6BB=14"
+],
+"pot": 4,
+"to_call": 0,
+"my_stack": 249,
+"opp_stack": 547,
+"dealer": "opp"
+},
+"model_test/live/000931_my_turn.raw": {
+"screen": "my_turn",
+"hero": "6s 9c",
+"board": "Ah 5s 7c Td",
+"buttons": [
+"加注",
+"弃牌",
+"跟注"
+],
+"presets": [
+"1/3=82",
+"1/2=100",
+"2/3=119",
+"1=156",
+"1.2=178"
+],
+"pot": 80,
+"to_call": 32,
+"my_stack": 241,
+"opp_stack": 479,
+"dealer": "me"
+},
+"model_test/live/001046_my_turn.raw": {
+"screen": "my_turn",
+"hero": "7h 3h",
+"board": "",
+"buttons": [
+"加注",
+"弃牌",
+"跟注"
+],
+"presets": [
+"2BB=4",
+"3BB=6",
+"4BB=None",
+"5BB=10",
+"6BB=12"
+],
+"pot": 3,
+"to_call": 1,
+"my_stack": 238,
+"opp_stack": 559,
+"dealer": "me"
+},
+"model_test/live/001202_my_turn.raw": {
+"screen": "my_turn",
+"hero": "Ac 7h",
+"board": "2c Kc 5h 4d 7d",
+"buttons": [
+"加注",
+"弃牌",
+"跟注"
+],
+"presets": [
+"1/3=209",
+"1/2=254",
+"2/3=301",
+"1=394",
+"1.2=450"
+],
+"pot": 200,
+"to_call": 80,
+"my_stack": 178,
+"opp_stack": 422,
+"dealer": "opp"
+},
+"model_test/live/001309_my_turn.raw": {
+"screen": "my_turn",
+"hero": "2c Td",
+"board": "Ks 3s Tc 6d",
+"buttons": [
+"下注",
+"弃牌",
+"让牌"
+],
+"presets": [
+"1/3=6",
+"1/2=9",
+"2/3=12",
+"1=18",
+"1.2=21"
+],
+"pot": 18,
+"to_call": 0,
+"my_stack": 368,
+"opp_stack": 414,
+"dealer": "opp"
+},
+"model_test/live/001435_my_turn.raw": {
+"screen": "my_turn",
+"hero": "4c 6d",
+"board": "Ks 3d Ad 7s Js",
+"buttons": [
+"下注",
+"弃牌",
+"让牌"
+],
+"presets": [
+"1/3=None",
+"1/2=2",
+"2/3=2",
+"1=4",
+"1.2=4"
+],
+"pot": 4,
+"to_call": 0,
+"my_stack": 398,
+"opp_stack": 398,
+"dealer": "opp"
+},
+"model_test/live/001548_my_turn.raw": {
+"screen": "my_turn",
+"hero": "4c Jd",
+"board": "2d 9c 8d",
+"buttons": [
+"下注",
+"弃牌",
+"让牌"
+],
+"presets": [
+"1/3=None",
+"1/2=2",
+"2/3=2",
+"1=4",
+"1.2=4"
+],
+"pot": 4,
+"to_call": 0,
+"my_stack": 392,
+"opp_stack": 404,
+"dealer": "opp"
+},
+"model_test/live/001656_my_turn.raw": {
+"screen": "my_turn",
+"hero": "7d 8h",
+"board": "9c 2d Qd",
+"buttons": [
+"下注",
+"弃牌",
+"让牌"
+],
+"presets": [
+"1/3=4",
+"1/2=6",
+"2/3=8",
+"1=12",
+"1.2=14"
+],
+"pot": 12,
+"to_call": 0,
+"my_stack": 388,
+"opp_stack": 400,
+"dealer": "me"
+},
+"model_test/live/001759_my_turn.raw": {
+"screen": "my_turn",
+"hero": "3h 6s",
+"board": "8h Kd 3d Js",
+"buttons": [
+"加注",
+"弃牌",
+"跟注"
+],
+"presets": [
+"1/3=26",
+"1/2=33",
+"2/3=40",
+"1=54",
+"1.2=62"
+],
+"pot": 30,
+"to_call": 12,
+"my_stack": 391,
+"opp_stack": 379,
+"dealer": "opp"
+},
+"model_test/live/001922_my_turn.raw": {
+"screen": "my_turn",
+"hero": "3c 6d",
+"board": "4c 9d 4s",
+"buttons": [
+"下注",
+"弃牌",
+"让牌"
+],
+"presets": [
+"1/3=None",
+"1/2=2",
+"2/3=2",
+"1=4",
+"1.2=4"
+],
+"pot": 4,
+"to_call": 0,
+"my_stack": 425,
+"opp_stack": 371,
+"dealer": "opp"
+},
+"model_test/live/002027_my_turn.raw": {
+"screen": "my_turn",
+"hero": "Td Jh",
+"board": "6h 4d 5d",
+"buttons": [
+"下注",
+"弃牌",
+"让牌"
+],
+"presets": [
+"1/3=19",
+"1/2=28",
+"2/3=37",
+"1=56",
+"1.2=67"
+],
+"pot": 56,
+"to_call": 0,
+"my_stack": 397,
+"opp_stack": 347,
+"dealer": "me"
+},
+"model_test/live/002138_my_turn.raw": {
+"screen": "my_turn",
+"hero": "4h 8d",
+"board": "3h 2d 3c 5d 9c",
+"buttons": [
+"下注",
+"弃牌",
+"让牌"
+],
+"presets": [
+"1/3=5",
+"1/2=8",
+"2/3=10",
+"1=16",
+"1.2=19"
+],
+"pot": 16,
+"to_call": 0,
+"my_stack": 445,
+"opp_stack": 339,
+"dealer": "opp"
+},
+"model_test/live/002244_my_turn.raw": {
+"screen": "my_turn",
+"hero": "5h Ks",
+"board": "5s Jd 4s",
+"buttons": [
+"下注",
+"弃牌",
+"让牌"
+],
+"presets": [
+"1/3=9",
+"1/2=14",
+"2/3=18",
+"1=28",
+"1.2=33"
+],
+"pot": 38,
+"to_call": 0,
+"my_stack": 441,
+"opp_stack": 331,
+"dealer": "opp"
+},
+"model_test/live/002406_my_turn.raw": {
+"screen": "my_turn",
+"hero": "Jd Th",
+"board": "8s Jc 9c",
+"buttons": [
+"下注",
+"弃牌",
+"让牌"
+],
+"presets": [
+"1/3=5",
+"1/2=8",
+"2/3=10",
+"1=16",
+"1.2=19"
+],
+"pot": 16,
+"to_call": 0,
+"my_stack": 598,
+"opp_stack": 786,
+"dealer": "opp"
+},
+"model_test/live/002557_my_turn.raw": {
+"screen": "my_turn",
+"hero": "7c 3d",
+"board": "",
+"buttons": [
+"加注",
+"弃牌",
+"让牌"
+],
+"presets": [
+"2BB=6",
+"3BB=8",
+"4BB=10",
+"5BB=12",
+"6BB=14"
+],
+"pot": 4,
+"to_call": 0,
+"my_stack": 600,
+"opp_stack": 796,
+"dealer": "opp"
+},
+"model_test/live/003720_my_turn.raw": {
+"screen": "anim",
+"hero": "9h 4h",
+"board": "",
+"buttons": [
+"All in",
+"弃牌"
+],
+"presets": [],
+"pot": 3,
+"to_call": 364,
+"my_stack": 364,
+"opp_stack": 33,
+"dealer": "opp"
+},
+"model_test/live/003835_my_turn.raw": {
+"screen": "my_turn",
+"hero": "3c 7h",
+"board": "",
+"buttons": [
+"All in",
+"弃牌"
+],
+"presets": [],
+"pot": 642,
+"to_call": 358,
+"my_stack": 358,
+"opp_stack": null,
+"dealer": "opp"
+},
+"model_test/live/004045_my_turn.raw": {
+"screen": "my_turn",
+"hero": "Qs 6h",
+"board": "",
+"buttons": [
+"加注",
+"弃牌",
+"跟注"
+],
+"presets": [
+"1/3=6",
+"1/2=8",
+"2/3=9",
+"1=12",
+"1.2=13"
+],
+"pot": 6,
+"to_call": 2,
+"my_stack": 198,
+"opp_stack": 196,
+"dealer": "opp"
+},
+"model_test/live/004221_my_turn.raw": {
+"screen": "my_turn",
+"hero": "Jd Kd",
+"board": "",
+"buttons": [
+"加注",
+"弃牌",
+"跟注"
+],
+"presets": [
+"2BB=4",
+"3BB=6",
+"4BB=None",
+"5BB=10",
+"6BB=12"
+],
+"pot": 3,
+"to_call": 1,
+"my_stack": 399,
+"opp_stack": 398,
+"dealer": "me"
+},
+"model_test/live/004339_my_turn.raw": {
+"screen": "my_turn",
+"hero": "",
+"board": "",
+"buttons": [
+"弃牌",
+"确定",
+"跟注"
+],
+"presets": [
+"1/3=45",
+"1/2=None",
+"2/3=None",
+"1=81",
+"1.2=91"
+],
+"pot": 35,
+"to_call": 19,
+"my_stack": 404,
+"opp_stack": 361,
+"dealer": "opp"
+},
+"model_test/live/004419_my_turn.raw": {
+"screen": "my_turn",
+"hero": "Qc Jd",
+"board": "",
+"buttons": [
+"加注",
+"弃牌",
+"跟注"
+],
+"presets": [
+"1/3=20",
+"1/2=24",
+"2/3=28",
+"1=36",
+"1.2=40"
+],
+"pot": 16,
+"to_call": 8,
+"my_stack": 400,
+"opp_stack": 384,
+"dealer": "me"
+},
+"model_test/live/004518_my_turn.raw": {
+"screen": "my_turn",
+"hero": "",
+"board": "",
+"buttons": [
+"弃牌",
+"确定",
+"跟注"
+],
+"presets": [
+"1/3=284",
+"1/2=None",
+"2/3=None",
+"1=513",
+"1.2=582"
+],
+"pot": 247,
+"to_call": 99,
+"my_stack": 326,
+"opp_stack": 227,
+"dealer": null
+},
+"model_test/live/004617_my_turn.raw": {
+"screen": "my_turn",
+"hero": "Qh Ac",
+"board": "",
+"buttons": [
+"加注",
+"弃牌",
+"让牌"
+],
+"presets": [
+"2BB=None",
+"3BB=8",
+"4BB=10",
+"5BB=12",
+"6BB=14"
+],
+"pot": 4,
+"to_call": 0,
+"my_stack": 650,
+"opp_stack": 146,
+"dealer": "opp"
+},
+"model_test/live/004801_my_turn.raw": {
+"screen": "anim",
+"hero": "",
+"board": "5c 8s Th",
+"buttons": [
+"下注",
+"弃牌",
+"让牌"
+],
+"presets": [],
+"pot": 8,
+"to_call": 0,
+"my_stack": 500,
+"opp_stack": 1292,
+"dealer": "me"
+},
+"model_test/live/004902_my_turn.raw": {
+"screen": "my_turn",
+"hero": "7c 9h",
+"board": "5c 8s Th 3h 8c",
+"buttons": [
+"下注",
+"弃牌",
+"让牌"
+],
+"presets": [
+"1/3=208",
+"1/2=306",
+"2/3=410",
+"1=612",
+"1.2=734"
+],
+"pot": 612,
+"to_call": 0,
+"my_stack": 198,
+"opp_stack": 990,
+"dealer": "me"
+},
+"model_test/live/005050_my_turn.raw": {
+"screen": "my_turn",
+"hero": "Jd Qh",
+"board": "Ac Js 8c Qd Kc",
+"buttons": [
+"下注",
+"弃牌",
+"让牌"
+],
+"presets": [
+"1/3=21",
+"1/2=32",
+"2/3=42",
+"1=64",
+"1.2=76"
+],
+"pot": 64,
+"to_call": 0,
+"my_stack": 364,
+"opp_stack": 1372,
+"dealer": "me"
+},
+"model_test/live/005212_my_turn.raw": {
+"screen": "my_turn",
+"hero": "Ts 8h",
+"board": "9h Ah 5h",
+"buttons": [
+"加注",
+"弃牌",
+"跟注"
+],
+"presets": [
+"1/3=175",
+"1/2=220",
+"2/3=267",
+"1=360",
+"1.2=416"
+],
+"pot": 200,
+"to_call": 80,
+"my_stack": 366,
+"opp_stack": 1234,
+"dealer": "me"
+},
+"model_test/live/005326_my_turn.raw": {
+"screen": "my_turn",
+"hero": "5h 8h",
+"board": "",
+"buttons": [
+"加注",
+"弃牌",
+"跟注"
+],
+"presets": [
+"1/3=15",
+"1/2=18",
+"2/3=21",
+"1=27",
+"1.2=30"
+],
+"pot": 13,
+"to_call": 5,
+"my_stack": 280,
+"opp_stack": 1507,
+"dealer": "me"
+},
+"model_test/live/005600_my_turn.raw": {
+"screen": "my_turn",
+"hero": "Ts 8h",
+"board": "9h Ah 5h 5d",
+"buttons": [
+"All in",
+"弃牌",
+"跟注"
+],
+"presets": [],
+"pot": 467,
+"to_call": 187,
+"my_stack": null,
+"opp_stack": 1047,
+"dealer": "me"
+},
+"model_test/live/000628_other.raw": {
+"screen": "other",
+"hero": "Ts 8h",
+"board": "Kd 8c Ad 5s 7c",
+"buttons": [
+"让或弃",
+"让牌"
+],
+"presets": [],
+"pot": 48,
+"to_call": 0,
+"my_stack": 201,
+"opp_stack": 151,
+"dealer": "me"
+},
+"model_test/live/000906_other.raw": {
+"screen": "other",
+"hero": "6s 9c",
+"board": "Ah 5s 7c",
+"buttons": [
+"让或弃",
+"让牌"
+],
+"presets": [],
+"pot": 12,
+"to_call": 0,
+"my_stack": 259,
+"opp_stack": 529,
+"dealer": "me"
+},
+"model_test/live/001200_other.raw": {
+"screen": "other",
+"hero": "Ac 7h",
+"board": "2c Kc 5h 4d 7d",
+"buttons": [
+"下注",
+"让或弃",
+"让牌"
+],
+"presets": [],
+"pot": 86,
+"to_call": 0,
+"my_stack": 178,
+"opp_stack": 536,
+"dealer": "opp"
+},
+"model_test/live/001444_other.raw": {
+"screen": "other",
+"hero": "",
+"board": "Ks Ad 7s Js",
+"buttons": [],
+"presets": [],
+"pot": 4,
+"to_call": 0,
+"my_stack": 398,
+"opp_stack": 398,
+"dealer": "opp"
+},
+"model_test/live/001746_other.raw": {
+"screen": "other",
+"hero": "3h 6s",
+"board": "8h Kd 3d",
+"buttons": [],
+"presets": [],
+"pot": 18,
+"to_call": 0,
+"my_stack": 391,
+"opp_stack": 391,
+"dealer": "opp"
+},
+"model_test/live/002108_other.raw": {
+"screen": "other",
+"hero": "4h 8d",
+"board": "3h 2d 3c",
+"buttons": [
+"让或弃",
+"让牌"
+],
+"presets": [],
+"pot": 4,
+"to_call": 0,
+"my_stack": 451,
+"opp_stack": 345,
+"dealer": "opp"
+},
+"model_test/live/002413_other.raw": {
+"screen": "other",
+"hero": "Jd Th",
+"board": "8s Jc 9c",
+"buttons": [
+"下注",
+"让或弃",
+"让牌"
+],
+"presets": [],
+"pot": 26,
+"to_call": 0,
+"my_stack": 588,
+"opp_stack": 786,
+"dealer": "opp"
+},
+"model_test/live/003713_other.raw": {
+"screen": "other",
+"hero": "",
+"board": "",
+"buttons": [
+"弃牌"
+],
+"presets": [],
+"pot": null,
+"to_call": 0,
+"my_stack": 366,
+"opp_stack": 634,
+"dealer": "me"
+},
+"model_test/live/003958_other.raw": {
+"screen": "other",
+"hero": "Qc 6s",
+"board": "4s Ad 6h",
+"buttons": [
+"站起"
+],
+"presets": [],
+"pot": null,
+"to_call": 0,
+"my_stack": 710,
+"opp_stack": null,
+"dealer": "me"
+},
+"model_test/live/004230_other.raw": {
+"screen": "other",
+"hero": "Jd Kd",
+"board": "?h",
+"buttons": [],
+"presets": [],
+"pot": 12,
+"to_call": 0,
+"my_stack": 394,
+"opp_stack": 394,
+"dealer": "me"
+},
+"model_test/live/004609_other.raw": {
+"screen": "other",
+"hero": "",
+"board": "",
+"buttons": [],
+"presets": [],
+"pot": 3,
+"to_call": 0,
+"my_stack": 650,
+"opp_stack": 147,
+"dealer": "opp"
+},
+"model_test/live/004916_other.raw": {
+"screen": "other",
+"hero": "Kc Ad",
+"board": "",
+"buttons": [
+"让或弃",
+"让牌"
+],
+"presets": [],
+"pot": 3,
+"to_call": 0,
+"my_stack": 196,
+"opp_stack": 1601,
+"dealer": "opp"
+},
+"model_test/live/005132_other.raw": {
+"screen": "other",
+"hero": "Ts 8h",
+"board": "",
+"buttons": [
+"加注",
+"让或弃",
+"让牌"
+],
+"presets": [],
+"pot": 6,
+"to_call": 0,
+"my_stack": 422,
+"opp_stack": 1372,
+"dealer": "me"
+},
+"model_test/allin_after.raw": {
+"screen": "my_turn",
+"hero": "",
+"board": "",
+"buttons": [
+"All in",
+"弃牌"
+],
+"presets": [],
+"pot": 836,
+"to_call": 564,
+"my_stack": 564,
+"opp_stack": null,
+"dealer": "opp"
+},
+"model_test/allin_done.raw": {
+"screen": "profile",
+"hero": "",
+"board": "",
+"buttons": [
+"让或弃",
+"让牌"
+],
+"presets": [],
+"pot": 3,
+"to_call": 0,
+"my_stack": 195,
+"opp_stack": 202,
+"dealer": "opp"
+},
+"model_test/allin_drag.raw": {
+"screen": "my_turn",
+"hero": "5s 6s",
+"board": "",
+"buttons": [
+"All in",
+"弃牌"
+],
+"presets": [],
+"pot": 836,
+"to_call": 564,
+"my_stack": 564,
+"opp_stack": null,
+"dealer": "opp"
+},
+"model_test/allin_drag2.raw": {
+"screen": "my_turn",
+"hero": "",
+"board": "Th",
+"buttons": [
+"弃牌",
+"确定",
+"跟注"
+],
+"presets": [
+"2BB=4",
+"3BB=6",
+"4BB=None",
+"5BB=10",
+"6BB=12"
+],
+"pot": 3,
+"to_call": 1,
+"my_stack": 197,
+"opp_stack": 200,
+"dealer": null
+},
+"model_test/allin_post1.raw": {
+"screen": "other",
+"hero": "6d 9d",
+"board": "",
+"buttons": [
+"All in"
+],
+"presets": [],
+"pot": 200,
+"to_call": null,
+"my_stack": null,
+"opp_stack": 200,
+"dealer": "me"
+},
+"model_test/allin_post2.raw": {
+"screen": "other",
+"hero": "6d 9d",
+"board": "",
+"buttons": [
+"All in"
+],
+"presets": [],
+"pot": 200,
+"to_call": null,
+"my_stack": null,
+"opp_stack": 200,
+"dealer": "opp"
+},
+"model_test/allin_post3.raw": {
+"screen": "other",
+"hero": "",
+"board": "",
+"buttons": [
+"All in"
+],
+"presets": [],
+"pot": 396,
+"to_call": null,
+"my_stack": null,
+"opp_stack": 4,
+"dealer": "me"
+},
+"model_test/allin_pre.raw": {
+"screen": "my_turn",
+"hero": "",
+"board": "Th",
+"buttons": [
+"弃牌",
+"确定",
+"跟注"
+],
+"presets": [
+"2BB=4",
+"3BB=6",
+"4BB=None",
+"5BB=10",
+"6BB=12"
+],
+"pot": 3,
+"to_call": 1,
+"my_stack": 197,
+"opp_stack": 200,
+"dealer": null
+},
+"model_test/allin_raise.raw": {
+"screen": "profile",
+"hero": "",
+"board": "",
+"buttons": [
+"回到牌桌",
+"离开"
+],
+"presets": [],
+"pot": 3,
+"to_call": 0,
+"my_stack": 567,
+"opp_stack": 830,
+"dealer": "opp"
+},
+"model_test/allin_raise2.raw": {
+"screen": "my_turn",
+"hero": "",
+"board": "",
+"buttons": [
+"弃牌",
+"确定",
+"跟注"
+],
+"presets": [
+"2BB=4",
+"3BB=None",
+"4BB=None",
+"5BB=10",
+"6BB=12"
+],
+"pot": 3,
+"to_call": 1,
+"my_stack": 566,
+"opp_stack": 831,
+"dealer": null
+},
+"model_test/allin_seen.raw": {
+"screen": "my_turn",
+"hero": "Kh 9s",
+"board": "",
+"buttons": [
+"加注",
+"弃牌",
+"跟注"
+],
+"presets": [
+"2BB=4",
+"3BB=6",
+"4BB=None",
+"5BB=10",
+"6BB=12"
+],
+"pot": 3,
+"to_call": 1,
+"my_stack": 569,
+"opp_stack": 828,
+"dealer": "me"
+},
+"model_test/allin_turn.raw": {
+"screen": "my_turn",
+"hero": "Kh 9s",
+"board": "",
+"buttons": [
+"加注",
+"弃牌",
+"跟注"
+],
+"presets": [
+"2BB=4",
+"3BB=6",
+"4BB=None",
+"5BB=10",
+"6BB=12"
+],
+"pot": 3,
+"to_call": 1,
+"my_stack": 569,
+"opp_stack": 828,
+"dealer": "me"
+},
+"model_test/callallin_post.raw": {
+"screen": "other",
+"hero": "",
+"board": "",
+"buttons": [
+"跟注"
+],
+"presets": [],
+"pot": 24,
+"to_call": 17,
+"my_stack": 376,
+"opp_stack": null,
+"dealer": "opp"
+},
+"model_test/callallin_pre.raw": {
+"screen": "my_turn",
+"hero": "7s Tc",
+"board": "",
+"buttons": [
+"弃牌",
+"跟注"
+],
+"presets": [],
+"pot": 14,
+"to_call": 10,
+"my_stack": 386,
+"opp_stack": 0,
+"dealer": "opp"
+},
+"model_test/replay1.raw": {
+"screen": "other",
+"hero": "Js Ad",
+"board": "",
+"buttons": [],
+"presets": [],
+"pot": 5,
+"to_call": 22,
+"my_stack": null,
+"opp_stack": 598,
+"dealer": "me"
+},
+"model_test/replay2.raw": {
+"screen": "other",
+"hero": "",
+"board": "Jc 8h Qd Kh",
+"buttons": [],
+"presets": [],
+"pot": null,
+"to_call": 0,
+"my_stack": null,
+"opp_stack": 650,
+"dealer": "me"
+},
+"model_test/runtwice.raw": {
+"screen": "my_turn",
+"hero": "Jd Kd",
+"board": "",
+"buttons": [
+"加注",
+"弃牌",
+"跟注"
+],
+"presets": [
+"2BB=4",
+"3BB=6",
+"4BB=None",
+"5BB=10",
+"6BB=12"
+],
+"pot": 3,
+"to_call": 1,
+"my_stack": 399,
+"opp_stack": 398,
+"dealer": "me"
+},
+"model_test/state1.raw": {
+"screen": "my_turn",
+"hero": "Qc 7c",
+"board": "Tc Jc 8s",
+"buttons": [
+"下注",
+"弃牌",
+"让牌"
+],
+"presets": [
+"1/3=4",
+"1/2=6",
+"2/3=8",
+"1=12",
+"1.2=14"
+],
+"pot": 12,
+"to_call": 0,
+"my_stack": 194,
+"opp_stack": 194,
+"dealer": "opp"
+},
+"model_test/unknown/1030_005531_other.raw": {
+"screen": "other",
+"hero": "",
+"board": "",
+"buttons": [],
+"presets": [],
+"pot": null,
+"to_call": 0,
+"my_stack": null,
+"opp_stack": 1800,
+"dealer": "me"
+},
+"model_test/unknown/1030_005958_my_turn.raw": {
+"screen": "my_turn",
+"hero": "Ts 8h",
+"board": "9h Ah 5h 5d",
+"buttons": [
+"All in",
+"弃牌",
+"跟注"
+],
+"presets": [],
+"pot": 467,
+"to_call": 187,
+"my_stack": 286,
+"opp_stack": 1047,
+"dealer": "me"
+},
+"model_test/unknown/1030_010002_my_turn.raw": {
+"screen": "my_turn",
+"hero": "Ts 8h",
+"board": "9h Ah 5h 5d",
+"buttons": [
+"All in",
+"弃牌",
+"跟注"
+],
+"presets": [],
+"pot": 467,
+"to_call": 187,
+"my_stack": null,
+"opp_stack": 1047,
+"dealer": "me"
+},
+"model_test/unknown/1030_010006_my_turn.raw": {
+"screen": "my_turn",
+"hero": "Ts 8h",
+"board": "9h Ah 5h 5d",
+"buttons": [
+"All in",
+"弃牌",
+"跟注"
+],
+"presets": [],
+"pot": 467,
+"to_call": 187,
+"my_stack": 286,
+"opp_stack": 1047,
+"dealer": "me"
+},
+"model_test/unknown/1030_010011_my_turn.raw": {
+"screen": "my_turn",
+"hero": "Ts 8h",
+"board": "9h Ah 5h 5d",
+"buttons": [
+"All in",
+"弃牌",
+"跟注"
+],
+"presets": [],
+"pot": 467,
+"to_call": 187,
+"my_stack": null,
+"opp_stack": 1047,
+"dealer": "me"
+},
+"model_test/unknown/1030_010015_my_turn.raw": {
+"screen": "my_turn",
+"hero": "Ts 8h",
+"board": "9h Ah 5h 5d",
+"buttons": [
+"All in",
+"弃牌",
+"跟注"
+],
+"presets": [],
+"pot": 467,
+"to_call": 187,
+"my_stack": 286,
+"opp_stack": 1047,
+"dealer": "me"
+},
+"model_test/unknown/1030_010019_my_turn.raw": {
+"screen": "my_turn",
+"hero": "Ts 8h",
+"board": "9h Ah 5h 5d",
+"buttons": [
+"All in",
+"弃牌",
+"跟注"
+],
+"presets": [],
+"pot": 467,
+"to_call": 187,
+"my_stack": null,
+"opp_stack": 1047,
+"dealer": "me"
+},
+"model_test/unknown/1030_010024_my_turn.raw": {
+"screen": "my_turn",
+"hero": "Ts 8h",
+"board": "9h Ah 5h 5d",
+"buttons": [
+"All in",
+"弃牌",
+"跟注"
+],
+"presets": [],
+"pot": 467,
+"to_call": 187,
+"my_stack": 286,
+"opp_stack": 1047,
+"dealer": "me"
+},
+"model_test/unknown/1030_010028_my_turn.raw": {
+"screen": "my_turn",
+"hero": "Ts 8h",
+"board": "9h Ah 5h 5d",
+"buttons": [
+"All in",
+"弃牌",
+"跟注"
+],
+"presets": [],
+"pot": 467,
+"to_call": 187,
+"my_stack": null,
+"opp_stack": 1047,
+"dealer": "me"
+},
+"model_test/user_shots/now_0107.raw": {
+"screen": "my_turn",
+"hero": "Ts 8h",
+"board": "9h Ah 5h 5d",
+"buttons": [
+"All in",
+"弃牌",
+"跟注"
+],
+"presets": [],
+"pot": 467,
+"to_call": 187,
+"my_stack": 286,
+"opp_stack": 1047,
+"dealer": "me"
+}
+}

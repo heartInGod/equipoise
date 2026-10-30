@@ -1,0 +1,12 @@
+# 大文件/运行产物
+model_test/
+logs/
+__pycache__/
+*.pyc
+.DS_Store
+# 第三方研究仓库（自带 git，未接入主链路）
+pluribus-poker-AI/
+# 编译产物（由 tools/ocr.swift 生成：cd tools && swiftc -O ocr.swift -o ocr）
+tools/ocr
+# 画像自动更新的备份
+tables/**/*.md.bak

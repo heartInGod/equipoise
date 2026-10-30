@@ -216,7 +216,7 @@ class AnthropicKA:
                     pass
             time.sleep(3)
 
-    def __call__(self, prompt, timeout=12, max_tokens=200):
+    def __call__(self, prompt, timeout=12, max_tokens=300):
         """prompt: 文本，或 session 模式的 {"system": [...], "messages": [...]}"""
         if isinstance(prompt, dict):
             req = {"system": prompt["system"], "messages": prompt["messages"]}
@@ -234,6 +234,7 @@ class AnthropicKA:
                     c.close(); raise RuntimeError(f"HTTP {r.status}: {d[:200].decode(errors='replace')}")
                 with self.lock: self.pool.append([c, time.time()])
                 d = json.loads(d)
+                if d.get("stop_reason") == "refusal" and not d.get("content"): raise RuntimeError("模型拒答(stop_reason=refusal)")
                 return "".join(x.get("text", "") for x in d.get("content", []) if x.get("type") == "text")
             except (http.client.RemoteDisconnected, BrokenPipeError, ConnectionResetError, http.client.CannotSendRequest):
                 c.close()
@@ -246,7 +247,7 @@ def generic_model(ref):
     """非 anthropic provider：沿用 poker_bot.call_model（每次新建连接）"""
     from poker_bot import call_model
     from session_prompt import flatten
-    return lambda prompt, timeout=12, max_tokens=200: call_model(ref, flatten(prompt), None, timeout=timeout, max_tokens=max_tokens)
+    return lambda prompt, timeout=12, max_tokens=300: call_model(ref, flatten(prompt), None, timeout=timeout, max_tokens=max_tokens)
 
 
 def make_model(ref):

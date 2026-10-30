@@ -611,6 +611,16 @@ class TestModelEval(unittest.TestCase):
         import model_eval as E
         cls.E = E
 
+    def test_output_formats(self):
+        """SYS_STATIC 的 {output}：默认真机短 JSON（含 range），explain=True 换成带 hero/theory 的测试格式；范围推演步骤都在"""
+        E = self.E
+        c = next(c for c in E.CASES if c["id"] == "range_nit_turn_xr")
+        st, h = E.build(c)
+        live, exp = (E.SP.flatten(E.prompt_for(c, st, h, "session", x)) for x in (False, True))
+        for p in (live, exp):
+            self.assertIn("对手范围推演", p); self.assertIn('"range"', p); self.assertNotIn("{output}", p)
+        self.assertNotIn('"theory"', live); self.assertIn('"theory"', exp); self.assertIn('"hero"', exp)
+
     def test_cases_consistent(self):
         E = self.E
         self.assertEqual(len({c["id"] for c in E.CASES}), len(E.CASES))

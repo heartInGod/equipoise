@@ -45,11 +45,42 @@ SYS_STATIC = """你是无限注德州扑克单挑(HU)职业牌手，正在 WePok
 - 「听牌胜率」已按去重 outs 精确计算，直接用；只有公共牌成对时同花/顺子听要明显打折（对手可能已成葫芦），非坚果同花听只需小幅打折。
 - 翻牌圈 12+ outs（同花+顺子组合听）面对全下，到河牌胜率接近所需胜率时倾向跟注。
 偏移：只在「对手画像」有证据的漏洞上偏移（本局统计对照下面「单挑统计参考值」判断偏高/偏低），样本少（<100 手）时只做小幅偏移、贴近基线。
+
+## 对手范围推演（每次决策的第一步，必须先做）
+按范围思考，不按单手牌：对手不是“一手牌”，而是一个牌的集合；他的每个动作都会删掉其中一部分。按街从宽到窄推，再拿我方牌去比。
+1. 翻前起点（单挑基线，用画像 VPIP/PFR 校正：VPIP 越高起点越宽，PFR 低的人加注就更强）
+- BTN 开局 2~3BB：约前80%，线性（含全部强牌）；开局尺度明显偏大（≥4BB）且画像显示他尺度随牌力变，偏强。
+- BTN 平跟(limp)：多为弱到中等牌（强牌通常加注），去掉了大部分 AA~TT、AK/AQ；被动型对手 limp 更宽、偶尔慢打大牌。
+- BB 跟注开局：约前65% 里去掉 3bet 的部分 → 封顶（AA/KK/QQ/AK 大多已 3bet），中等牌、同花连张、小对子多。
+- BB 3bet：约前12%，两极化（TT+/AQ+ 价值 + A5s 类阻断诈唬）；BTN 跟 3bet：约前20% 去掉 4bet 部分 → 封顶的中强牌。
+- 4bet：约前4%；翻前全下：按代码给的「翻前面对大注」前X%。
+2. 翻后逐个动作删牌（先看牌面对他范围的命中，见「读牌面」：高张/连张/同花面对谁更有利）
+- 小注（≤1/2池）：线性、范围宽，中等牌/听牌/空气都有；cbet 频率高的对手更宽。
+- 大注（≥2/3池）/超池：两极化 = 强成牌 + 听牌/空气，中等牌少；被动型（AF<1、很少下注）的大注 ≈ 强牌。
+- 过牌：翻前加注者过牌 → 顶端被削弱，多为中等牌或放弃牌（留意慢打）；有位置过牌回(check back) → 封顶，几乎没有强价值牌。
+- 跟注：中等成牌 + 听牌，去掉了空气，也基本去掉坚果（坚果多会加注）；连续跟两条街 → 以中等对子、强听牌为主。
+- 过牌-加注 / 加注：两对以上 + 强听牌半诈唬；越晚的街诈唬越少，河牌加注几乎都是强牌；被动型对手加注 = 坚果。
+- 转牌/河牌完成听牌（第三张同花、连成顺子）：他前面一路跟注的听牌现在成了；他前面跟注、这时突然领打大注，多半成了。
+- 河牌：他前面跟注的听牌没中的部分只能弃或诈唬，所以下注范围 = 价值 + 没中的听牌；过牌范围多为摊牌价值牌。
+3. 画像校正：诈唬多（AF 高、cbet/二次下注高、摊牌常亮空气）→ 下注范围里空气更多；跟注多（WTSD 高、fold to cbet 低）→ 跟注范围更宽、含更弱的牌；样本少按基线。
+4. 定位我方：我方牌在他剩余范围中领先哪些、落后哪些、大约各占多少，再定动作。拿「所需胜率」去比的是我对他**剩余范围**的胜率，不是牌力本身（顶对若在他剩余范围里大多落后，赔率再好也弃）；动作必须和你写的范围结论一致：
+- 价值下注：他的跟注范围里有足够多比我差的牌（对封顶范围可薄价值）；
+- 诈唬：他的范围封顶/弱牌多且会弃，优先用阻断他跟注牌、不阻断他弃牌的牌；
+- 抓诈：他下注范围里的诈唬比例 ≥ 所需胜率（参考 MDF）才跟，否则弃；
+- 控池（过牌/跟注）：领先他的弱牌、落后他的强牌，下注时更差的不跟、更好的不弃。
 {exploit}{reference}
 
 ## 输出
-只输出一行 JSON，不要其他文字：
-{{"act":"弃牌|让牌|跟注|下注|加注|全下","size":"下注/加注填[]里=号前的档位名，去掉“池”字，如 3BB、1/2，否则null","why":"≤15字"}}"""
+{output}"""
+
+OUT_LIVE = """只输出一行 JSON，不要其他文字（先写对手范围，再给动作）：
+{"range":"≤40字：按行动线推出的对手当前范围（如：封顶中对+听牌，无两对以上）","act":"弃牌|让牌|跟注|下注|加注|全下","size":"下注/加注填[]里=号前的档位名，去掉“池”字，如 3BB、1/2，否则null","why":"≤20字"}"""
+
+OUT_EXPLAIN = """只输出一个 JSON 对象，不要其他文字，字段按顺序：
+{"range":"逐街推演：翻前起点 → 每条街他的每个动作删掉了什么、剩下什么（每街一句，带大致比例或代表牌）",
+ "hero":"我方牌在他剩余范围中的位置：领先哪些、落后哪些、大约各占多少；与所需胜率对比",
+ "theory":"理论依据：点名用到的 GTO / 技术手册概念及它在这里的结论（如 范围优势/坚果优势、两极化/封顶、MDF/所需胜率、阻断牌、下注目的、偏移表某条）",
+ "act":"弃牌|让牌|跟注|下注|加注|全下","size":"下注/加注填[]里=号前的档位名，去掉“池”字，如 3BB、1/2，否则null","why":"≤20字结论"}"""
 
 
 def _exploit_table():
@@ -72,12 +103,18 @@ def _sec(name, start, end, drop=()):
 
 
 def _reference():
-    """参考资料（单挑深筹码适用的部分）：gto.md §8.1/§2.5/§2.6/§6.2/§7，technology.md §2.4/§4.1/§4.2"""
+    """参考资料（单挑深筹码适用的部分）：gto.md §3/§4.1-4.3/§5/§8.1/§2.5/§2.6/§6.2/§7，technology.md §1/§2.4/§4.1-4.4"""
     parts = [
+        ("核心原则", _sec("technology.md", r"## 1\.[^\n]*\n", r"\n---|\n## 2")),
         ("单挑统计参考值（对照「对手画像」本局统计判断偏离方向）", _sec("gto.md", r"### 8\.1[^\n]*\n", r"\n---|\n## 9")),
         ("筹码深度", _sec("technology.md", r"### 2\.4[^\n]*\n", r"\n---|\n## 3")),
         ("读牌面", _sec("technology.md", r"### 4\.1[^\n]*\n", r"### 4\.2")),
         ("SPR（代码在「当前局面」给出）", _sec("technology.md", r"### 4\.2[^\n]*\n", r"### 4\.3")),
+        ("下注的目的", _sec("technology.md", r"### 4\.3[^\n]*\n", r"### 4\.4")),
+        ("转牌和河牌", _sec("technology.md", r"### 4\.4[^\n]*\n", r"\n---|\n## 5")),
+        ("范围理论", re.sub(r"(?m)^### 4\.\d+ ", "#### ", _sec("gto.md", r"### 4\.1[^\n]*\n", r"\n---|\n## 5"))),
+        ("阻断牌", _sec("gto.md", r"## 5\.[^\n]*\n", r"\n---|\n## 6")),
+        ("无差异原则", _sec("gto.md", r"## 3\.[^\n]*\n", r"\n---|\n## 4", drop=("混合策略", "混合频率"))),
         ("翻后下注尺度", _sec("gto.md", r"### 6\.2[^\n]*\n", r"### 6\.3")),
         ("下注尺度速查（所需胜率已由代码算出；MDF / α 用来判断诈唬和防守）", _sec("gto.md", r"### 2\.5[^\n]*\n", r"### 2\.6")),
         ("公式的适用边界", _sec("gto.md", r"### 2\.6[^\n]*\n", r"\n---|\n## 3")),
@@ -504,7 +541,7 @@ class HandSession:
     """维护 session 模式的请求。build() 生成本次请求（本手完整记录，单条 user）；commit() 记下模型回复。"""
     def __init__(self, table_dir=None, opp=None, keep_hands=6, hands_log=None, on_hand_end=None, hero_name=None,
                  history=None, population=None, warm=False, votes=3, log=print, store=None, store_write=False, hist_stats=None,
-                 msgs_log=None, on_summary=None):
+                 msgs_log=None, on_summary=None, explain=False):
         """history=该对手此前（跨桌）已结束的手 / hist_stats=其累计统计计数，热启动；population=其他对手的手，对手样本少时作群体参考（冷启动）。
         对手昵称由 see_opp() 从截图识别（多帧投票），识别到/换人后 warm=True 时后台加载该对手跨桌历史，下一手开始生效；
         opp 参数只是初始值（可为 None）。
@@ -513,6 +550,7 @@ class HandSession:
         on_summary=每手结束的一行摘要回调（真机写 ops.log）。
         store=对手库 OppDB：有它时历史统计/画像/群体参考按主键查库；store_write=True（仅真机）时每手把计数直接加进库（不读 jsonl）。"""
         self.table_dir, self.opp, self.keep = table_dir, opp, keep_hands
+        self.explain = explain               # True=测试模式输出（逐街范围推演 + 理论依据）；真机用短 JSON
         self.hist_S = hist_stats or (opp_stats(history) if history else None)
         self.prof = None                     # 对手画像 {"profile","ptype","src"}：本桌 <opp>.md 优先，其次对手库里最近一份
         self.store, self.store_write = store, store_write
@@ -536,7 +574,8 @@ class HandSession:
 
     def _static(self):
         self.static = SYS_STATIC.format(exploit=_exploit_table(), reference=_reference(),
-                                        table=_table_brief(self.table_dir) + (f"\n- 当前对手：{self.opp}" if self.opp else ""))
+                                        table=_table_brief(self.table_dir) + (f"\n- 当前对手：{self.opp}" if self.opp else ""),
+                                        output=OUT_EXPLAIN if self.explain else OUT_LIVE)
 
     # ---- 对手识别 / 异步加载 ----
     def see_opp(self, raw):

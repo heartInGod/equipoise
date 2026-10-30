@@ -103,6 +103,21 @@ CASES = [
     C("exploit_station_thin_value", "对手画像", "9h 8h", "BTN",
       SRP_BTN + ["翻牌 对手让牌", "翻牌 我方让牌", "转牌 对手让牌", "转牌 我方让牌", "河牌 对手让牌"], "Kd 9s 4c 2h 3d",
       ok=["下注"], opp="station", modes=("session",), why="跟注站会用更差的牌跟，中对薄价值下注"),
+
+    # ---------------- 范围推演（按行动线缩窄对手范围后答案才明确） ----------------
+    C("range_station_river_lead_flush", "范围推演", "Ks Qd", "BTN",
+      SRP_BTN + ["翻牌 对手让牌", "翻牌 我方下注到 6", "翻牌 对手跟注", "转牌 对手让牌", "转牌 我方下注到 15", "转牌 对手跟注",
+                 "河牌 对手下注 52"], "Kh 9h 4c 2s 7h", ok=["弃牌"], bad=["加注", "全下"], opp="station", modes=("session",),
+      why="被动跟注站一路过牌跟注，河牌第三张红桃时突然领打满池 = 跟上来的同花听牌成了，顶对弃"),
+    C("range_nit_turn_xr", "范围推演", "Ac Qd", "BTN",
+      SRP_BTN + ["翻牌 对手让牌", "翻牌 我方下注到 6", "翻牌 对手跟注", "转牌 对手让牌", "转牌 我方下注到 15", "转牌 对手加注到 50"],
+      "Qs 8h 4d 7c", ok=["弃牌"], bad=["加注", "全下"], opp="nit", modes=("session",),
+      why="紧弱对手几乎不过牌加注，转牌 check-raise = 两对/三条/65 顺，顶对顶踢脚落后，弃"),
+    C("range_flop_xr_overpair_wet", "范围推演", "Qc Qd", "BTN", SRP_BTN + ["翻牌 对手让牌", "翻牌 我方下注到 6", "翻牌 对手加注到 20"],
+      "Jh Th 4c", ok=["跟注", "加注", "全下"], bad=["弃牌"],
+      why="湿润面翻牌 check-raise 范围 = 两对/三条 + 大量听牌半诈唬，QQ 对听牌领先，所需 28%，继续"),
+    C("range_nit_3bet_KJo", "范围推演", "Kc Jd", "BTN", ["翻前 我方加注到 5", "翻前 对手加注到 16（3bet）"],
+      ok=["弃牌"], opp="nit", modes=("session",), why="紧弱对手 3bet 率约 7%，范围 ≈ QQ+/AK，KJo 被压制，弃（对基线 3bet 可跟）"),
 ]
 
 

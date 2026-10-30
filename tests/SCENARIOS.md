@@ -48,7 +48,7 @@
 | 35 | 日志异步写入不阻塞 | 200 行 <50ms | test_async_writer |
 | 36 | 识别回归（132 帧真实截图）+ parse <0.6s | | TestGoldenFrames |
 | 37 | ops.log 标准日志格式 / 级别 / 未捕获异常 | | TestLogroll |
-| 38 | 模型评测用例自洽（正确动作可执行、prompt 含手牌/画像）、判分归一化（跟注即全下、翻后“加注”=下注、面对下注“让牌”=兜底弃牌） | 模型真实正确率用 `tools/model_eval.py` 另跑（调模型） | TestModelEval |
+| 38 | 模型评测用例自洽（正确动作可执行、prompt 含手牌/画像）、判分归一化（跟注即全下、翻后“加注”=下注、面对下注“让牌”=兜底弃牌）；session prompt 的输出格式（真机 `OUT_LIVE` 含 range / `--explain` 的 `OUT_EXPLAIN` 含 hero、theory）与「对手范围推演」步骤 | 模型真实正确率与推理质量用 `tools/model_eval.py [--explain]` 另跑（调模型） | TestModelEval |
 
 ## 尚未覆盖（需要真机）
 - 截图提速（设备端裁剪 / 压缩）与常驻 `adb shell` 点击：手机连上后先跑 `AdbIO()._probe()` 和截图计时。

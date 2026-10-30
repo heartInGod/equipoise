@@ -72,12 +72,12 @@ def build(c):
     return st, h
 
 
-def prompt_for(c, st, h, mode):
+def prompt_for(c, st, h, mode, explain=False):
     """与 tlive 相同的 prompt。session：新建 HandSession（无历史手），对手画像用例注入统计计数 + 画像"""
     if mode == "session":
         prof = PROFILES.get(c["opp"]) if c["opp"] else None
         tmp = Path(tempfile.mkdtemp(prefix="model_eval_"))
-        sess = SP.HandSession(None, "对手A", hands_log=tmp / "hands.jsonl", log=lambda m: None,
+        sess = SP.HandSession(None, "对手A", hands_log=tmp / "hands.jsonl", log=lambda m: None, explain=explain,
                               hist_stats=dict(dict.fromkeys(SP.STAT_KEYS, 0), **prof["stats"]) if prof else None)
         if prof: sess.prof = {"profile": prof["profile"], "ptype": prof["ptype"], "src": "本桌"}
         req, _ = sess.build(st, h)
@@ -105,9 +105,9 @@ def grade(c, st, eff, frac):
     return "错"
 
 
-def run_one(c, mode, model, timeout):
+def run_one(c, mode, model, timeout, explain=False):
     st, h = build(c)
-    pr = prompt_for(c, st, h, mode)
+    pr = prompt_for(c, st, h, mode, explain)
     t0, raw, err = time.time(), None, None
     try:
         if model == "rule":
@@ -115,7 +115,7 @@ def run_one(c, mode, model, timeout):
         else:
             for k in range(6):                                   # 429 限流：退避重试（不计入耗时）
                 t1 = time.time()
-                try: raw = model(pr, timeout=timeout, max_tokens=300); break
+                try: raw = model(pr, timeout=timeout, max_tokens=1500 if explain else 300); break
                 except RuntimeError as e:
                     if "429" not in str(e) or k == 5: raise
                     time.sleep(5 * (k + 1)); t0 += time.time() - t1
@@ -164,6 +164,16 @@ def summary(res):
                   f"；应 {'/'.join(r['ok'])}{' ' + '/'.join(r['size']) if r['size'] else ''} —— {r['why']}")
 
 
+def dump_explain(res):
+    """explain 模式：逐例打印模型的范围推演和理论依据"""
+    for r in res:
+        d = r.get("dec") or {}
+        print(f"\n=== [{r['verdict']}] {r['id']}  做 {r.get('eff')}{' ' + r['frac'] if r.get('frac') else ''}"
+              f"（应 {'/'.join(r.get('ok') or [])}）{r['lat']}s")
+        if not d: print(f"  {r.get('err')}  raw={str(r.get('raw'))[:300]}"); continue
+        for k in ("range", "hero", "theory", "why"): print(f"  {k}: {d.get(k)}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--model", default="rule", help="provider/model，或 rule=本地规则基线")
@@ -173,24 +183,28 @@ def main():
     ap.add_argument("--timeout", type=float, default=30)
     ap.add_argument("--cat"); ap.add_argument("--case")
     ap.add_argument("--list", action="store_true"); ap.add_argument("--show")
+    ap.add_argument("--explain", action="store_true", help="测试模式输出：逐街范围推演 hero/theory（仅 session；max_tokens 1500）")
+    ap.add_argument("--full", action="store_true", help="--show 时连 system 一起打印")
     a = ap.parse_args()
     if a.list:
         for c in CASES: print(f"{c['cat']:<6} {c['id']:<32} 应 {'/'.join(c['ok']):<10} {c['why']}" + (f"（仅 {','.join(c['modes'])}）" if c["modes"] else ""))
         return
     if a.show:
-        c = next(c for c in CASES if c["id"] == a.show); st, h = build(c); pr = prompt_for(c, st, h, a.prompt)
-        print(pr if isinstance(pr, str) else SP.flatten(pr) if a.prompt == "session" and "--full" in sys.argv else _ptxt(pr))
+        c = next(c for c in CASES if c["id"] == a.show); st, h = build(c); pr = prompt_for(c, st, h, a.prompt, a.explain)
+        print(pr if isinstance(pr, str) else SP.flatten(pr) if a.full else _ptxt(pr))
         return
     cs = select(a)
     model = "rule" if a.model == "rule" else C.make_model(a.model)
     jobs = [c for c in cs for _ in range(a.n)]
-    print(f"评测 {len(cs)} 个用例 × {a.n} 次，model={a.model} prompt={a.prompt}")
+    if a.explain and a.timeout == 30: a.timeout = 90
+    print(f"评测 {len(cs)} 个用例 × {a.n} 次，model={a.model} prompt={a.prompt}{' explain' if a.explain else ''}")
     with ThreadPoolExecutor(max_workers=1 if model == "rule" else a.j) as ex:
-        res = list(ex.map(lambda c: run_one(c, a.prompt, model, a.timeout), jobs))
-    out = logroll.path(f"model_eval__{a.model.replace('/', '__')}__{a.prompt}.jsonl")
+        res = list(ex.map(lambda c: run_one(c, a.prompt, model, a.timeout, a.explain), jobs))
+    out = logroll.path(f"model_eval__{a.model.replace('/', '__')}__{a.prompt}{'_explain' if a.explain else ''}.jsonl")
     with open(out, "a", encoding="utf-8") as f:
         ts = time.strftime("%Y-%m-%d %H:%M:%S")
-        for r in res: f.write(json.dumps(dict(r, t=ts, model=a.model, mode=a.prompt), ensure_ascii=False) + "\n")
+        for r in res: f.write(json.dumps(dict(r, t=ts, model=a.model, mode=a.prompt, explain=a.explain), ensure_ascii=False) + "\n")
+    if a.explain: dump_explain(res)
     summary(res)
     print(f"\n明细：{out.relative_to(ROOT)}")
 

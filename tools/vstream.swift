@@ -1,5 +1,7 @@
 // 连续视频流截图：拉起一个输出 H.264 Annex-B 裸流的命令（默认 adb exec-out screenrecord），
-// VideoToolbox 硬解，内存里只留最新一帧；命令退出（screenrecord 180s 上限）后自动重启。
+// VideoToolbox 硬解，内存里只留最新一帧。
+// screenrecord 单段最长 180s（系统写死）：每 ROTATE 秒提前起下一段，新段出首帧即切换并关掉旧段（无缝）；
+// 段意外退出时立即重起。
 // 用法：vstream -- <命令...>     例：vstream -- adb -s 59a4a919 exec-out screenrecord --output-format=h264 --bit-rate 20000000 -
 // stdin 每行一条命令，stdout 每条回一行：
 //   wait <seq> <ms>   阻塞到 出现序号 > seq 的新帧 / 超时；回 "<seq> <t_recv> <alive> <restarts> <errs>"
@@ -23,11 +25,16 @@ final class Shared {
     var seq = 0, restarts = 0, errs = 0
     var tRecv = 0.0
     var alive = false
+    var activeGen = 0, endedGen = 0
+    var procs: [Int: Process] = [:]
 }
 let S = Shared()
+let ROTATE = Double(ProcessInfo.processInfo.environment["VSTREAM_ROTATE"] ?? "") ?? 170.0   // 测试可调小
 
 // ---------------- 解码 ----------------
 final class Decoder {
+    let gen: Int
+    init(_ g: Int) { gen = g }
     var sps: [UInt8]?, pps: [UInt8]?
     var fmt: CMVideoFormatDescription?
     var session: VTDecompressionSession?
@@ -102,7 +109,13 @@ final class Decoder {
         let r = VTDecompressionSessionDecodeFrame(ss, sampleBuffer: s, flags: [], infoFlagsOut: nil) { status, _, img, _, _ in
             S.cond.lock()
             if status == noErr, let img = img {
-                S.pb = img; S.seq += 1; S.tRecv = t; S.alive = true
+                let g = self.gen
+                if g > S.activeGen {                             // 新段出首帧：切换，关掉旧段
+                    S.activeGen = g
+                    for (k, p) in S.procs where k < g { p.terminate() }
+                    if g > 1 { elog("rotated to segment " + String(g)) }
+                }
+                if g == S.activeGen { S.pb = img; S.seq += 1; S.tRecv = t; S.alive = true }
             } else { S.errs += 1 }
             S.cond.broadcast(); S.cond.unlock()
         }
@@ -112,17 +125,21 @@ final class Decoder {
 }
 
 // ---------------- 读流 ----------------
-func streamLoop() {
-    let dec = Decoder()
+func runGen(_ gen: Int) {
+    let dec = Decoder(gen)
     var chunk = [UInt8](repeating: 0, count: 1 << 20)
-    while true {
+    do {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         p.arguments = cmd
         let pipe = Pipe()
         p.standardOutput = pipe
         p.standardError = FileHandle.nullDevice
-        do { try p.run() } catch { elog("spawn err \(error)"); sleep(1); continue }
+        do { try p.run() } catch {
+            elog("spawn err " + String(describing: error))
+            S.cond.lock(); S.endedGen = max(S.endedGen, gen); S.cond.broadcast(); S.cond.unlock(); return
+        }
+        S.cond.lock(); S.procs[gen] = p; S.cond.unlock()
         let fd = pipe.fileHandleForReading.fileDescriptor
         var buf = [UInt8](), nalStart = -1, scan = 0
         while true {
@@ -155,9 +172,28 @@ func streamLoop() {
         }
         p.terminate(); p.waitUntilExit()
         dec.flush(); dec.reset()
-        S.cond.lock(); S.alive = false; S.restarts += 1; S.cond.broadcast(); S.cond.unlock()
-        elog("stream ended (restart \(S.restarts))")
-        usleep(100_000)
+        S.cond.lock()
+        S.procs[gen] = nil; S.endedGen = max(S.endedGen, gen)
+        let wasActive = gen >= S.activeGen
+        if wasActive { S.alive = false; S.restarts += 1 }
+        let r = S.restarts
+        S.cond.broadcast(); S.cond.unlock()
+        if wasActive { elog("stream ended (restart " + String(r) + ")") }
+    }
+}
+
+// 每 ROTATE 秒起下一段（旧段在新段出首帧时关闭）；当前段意外退出则立即起下一段
+func supervisor() {
+    var g = 0
+    while true {
+        g += 1
+        let gen = g, started = Date()
+        Thread { runGen(gen) }.start()
+        let until = started.addingTimeInterval(ROTATE)
+        S.cond.lock()
+        while S.endedGen < gen && Date() < until { _ = S.cond.wait(until: until) }
+        S.cond.unlock()
+        if Date().timeIntervalSince(started) < 1 { usleep(500_000) }   // 起不来时别空转
     }
 }
 
@@ -182,7 +218,21 @@ func snap(_ path: String) -> String {
     return "ok \(seq) \(w) \(h)"
 }
 
-Thread { streamLoop() }.start()
+// 退出（stdin 关闭 / SIGTERM / SIGINT / SIGHUP）时先关掉所有 screenrecord 子进程，避免手机上留孤儿录屏
+func shutdown() -> Never {
+    S.cond.lock(); let ps = Array(S.procs.values); S.cond.unlock()
+    for p in ps { p.terminate() }
+    exit(0)
+}
+var sigSources: [DispatchSourceSignal] = []
+for sig in [SIGTERM, SIGINT, SIGHUP] {
+    signal(sig, SIG_IGN)
+    let src = DispatchSource.makeSignalSource(signal: sig, queue: .global())
+    src.setEventHandler { shutdown() }
+    src.resume(); sigSources.append(src)
+}
+
+Thread { supervisor() }.start()
 
 while let line = readLine() {
     let a = line.split(separator: " ").map(String.init)
@@ -202,3 +252,4 @@ while let line = readLine() {
         print("bad")
     }
 }
+shutdown()

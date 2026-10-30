@@ -6,7 +6,8 @@
 - screenrecord 只在画面变化时出帧。流活着时，最新一帧就是“当前画面”，有效到 now - LAT
   （LAT = 画面变化 -> 解码完成 的延迟上界，实测见 SKILL.md）。所以 get() 返回的 t 一律取 now - LAT；
 - 有新帧立即返回；没有新帧时每 REPEAT 秒把同一帧再返回一次，让 bot 的计时（卡住检测、预设补点等）照常走；
-- screenrecord 每 180s 到时限会退出，vstream 自动重启（约 0.5s 空档）；空档期 / vstream 挂掉时退回一次 adb screencap。"""
+- screenrecord 单段最长 180s（系统写死，不能调大）：vstream 每 170s 提前起下一段，新段出首帧即切换（无缝，不打日志）；
+  只有段意外断开才有空档，空档期 / vstream 挂掉时退回一次 adb screencap。"""
 import os, subprocess, threading, time
 from pathlib import Path
 
@@ -49,14 +50,19 @@ class StreamGrabber:
     def _errlog(p):
         for line in p.stderr:
             line = line.strip()
-            if line.startswith("stream ended"): LOG.info("[stream] screenrecord 到时限/断开，自动重启（%s）", line)
-            elif line.startswith("format"): LOG.info("[stream] %s", line)
+            if line.startswith("stream ended"): LOG.warning("[stream] 视频流意外断开，自动重连（%s）", line)
+            elif line.startswith(("rotated", "format")): pass                  # 每 170s 无缝换段，正常
             elif line: LOG.warning("[stream] %s", line)
 
     def _kill(self):
+        """先关 stdin + SIGTERM，让 vstream 关掉它的 screenrecord 子进程；2s 不退再 kill"""
         if self.p is not None:
-            try: self.p.kill(); self.p.wait(timeout=2)
+            try: self.p.stdin.close()
             except Exception: pass
+            try: self.p.terminate(); self.p.wait(timeout=2)
+            except Exception:
+                try: self.p.kill()
+                except Exception: pass
         self.p = None
 
     def close(self):

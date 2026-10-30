@@ -29,7 +29,7 @@ description: 德州扑克（无限注 NLH）职业牌手助手 + WePoker 真机�
 | `tools/preflop_rank.json` | 169 种起手牌单挑胜率与排名百分位（`tools/make_preflop_rank.py` 生成）+ `vs` 对前 5/10/20/35/50% 范围的胜率（`make_preflop_rank.py --vs` 生成，8 进程约 5 分钟），`state.preflop_rank()` 读，状态里显示「起手牌 前X%」；翻前面对大注（>5BB）时 `state.big_range()` 按加注层级/大小估对手范围（4bet+ 前5%、3bet 前10%、开局大注按 BB 前50%~10%），`vs_big_eq()` 查表给「翻前面对大注 对其范围(约前X%)胜率」，规则与 short/session 三处共用 | 翻前范围 |
 | `tools/state.py` | 截图 → 文字状态（常驻 OCR 进程 `_OCRServer` + 模板识牌，parse≈0.2s），含 `facts`/`made_desc`（听牌含去重“合计 N outs”）/`draw_outs`/`draw_eq`/`draw_line`（精确听牌胜率）/`preset_off`/`usable_presets`（灰档识别）/`HandHist`（换街用底池增量校正“下注到 ?”） | 机器人识别问题 |
 | `tools/ocr.swift` → `tools/ocr` | macOS Vision OCR；`serve` 常驻模式；改完 `cd tools && swiftc -O ocr.swift -o ocr` | 识别底层 |
-| `tools/vstream.swift` → `tools/vstream` | 视频流截图：拉起 `adb exec-out screenrecord --output-format=h264 -`，VideoToolbox 硬解只留最新帧；stdin 命令 `wait <seq> <ms>` / `snap <path>`（写与 screencap 同格式 .raw）；screenrecord 180s 到时限自动重启；改完 `cd tools && swiftc -O vstream.swift -o vstream`（编译产物不入库） | 截图底层 |
+| `tools/vstream.swift` → `tools/vstream` | 视频流截图：拉起 `adb exec-out screenrecord --output-format=h264 -`，VideoToolbox 硬解只留最新帧；stdin 命令 `wait <seq> <ms>` / `snap <path>`（写与 screencap 同格式 .raw）；screenrecord 单段上限 180s（系统写死，不能调大），每 170s 提前起下一段、新段出首帧即无缝切换（`VSTREAM_ROTATE` 环境变量可调小用于测试）；退出/SIGTERM 时关掉子进程，手机不留孤儿录屏；改完 `cd tools && swiftc -O vstream.swift -o vstream`（编译产物不入库） | 截图底层 |
 | `tools/stream.py` | `StreamGrabber`：与 `Grabber` 同接口 `get(min_t)`；帧时间 = now − LAT(0.25s，实测画面变化→解码≤0.22s)；静止时每 0.5s 重复返回同一帧；流不可用时退回单次 screencap。`bot_core.make_grabber(io, capture)` 选择 | tlive 截图方式 |
 | `tools/bench_llm.py` | 模型延迟基准（新建连接 vs 长连接） | 查模型慢 |
 | `tools/act.py` | 按 OCR 到的按钮文字定位并点击（弃/让/跟/加注/全下） | 手动操作手机 |

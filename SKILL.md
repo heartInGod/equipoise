@@ -24,10 +24,10 @@ description: 德州扑克（无限注 NLH）职业牌手助手 + WePoker 真机�
 | `tables/<table_id>/` | 每张桌：`table.md` + `player.log` + 每位玩家 `<user>.md` | 读写对局数据 |
 | `poker_bot.py` | 命令行入口（list / tprobe / tlive）、模型配置读取 `load_providers`、通用 `call_model` | 跑机器人 |
 | `bot_core.py` | 机器人核心：`TPROMPT`、`Bot.handle`（每帧状态机）、`execute` 动作映射、`rule_decide` 本地规则兜底、`Decider`（对冲请求+deadline）、`AnthropicKA` 长连接池、`Grabber` 后台截图、`AdbIO` 常驻 adb shell、`AsyncWriter` | 改策略/流程/延迟 |
-| `tests/test_scenarios.py` | 场景测试（70 例，不连手机不调模型）；场景清单 `tests/SCENARIOS.md`；golden 生成 `tests/make_golden.py` | 改代码后必跑 |
+| `tests/test_scenarios.py` | 场景测试（88 例，不连手机不调模型）；场景清单 `tests/SCENARIOS.md`；golden 生成 `tests/make_golden.py` | 改代码后必跑 |
 | `session_prompt.py` | `--prompt session`：`SYS_STATIC` 开局长 system（牌桌/规则/策略/偏移表 + `_reference()` 参考资料块：gto.md §8.1 单挑统计参考值/§6.2/§2.5/§2.6/§7、technology.md §2.4/§4.1/§4.2，改这些章节会直接改 prompt；prompt caching）+ 每手注入对手画像与最近几手；`HandSession` 每次决策发一条本手完整记录（`手牌 #n`、当前手牌，紧跟未弃牌对手的本局统计画像块，再逐街逐动作 `位置[用户名] 动作，剩余 xBB`、BB 单位快照（翻后含 `SPR`=双方剩余较小者÷有效底池），结尾“现在根据用户行为、画像和相关数据进行决策行动”），本局统计由 `opp_stats()` 从已结束的手算出、`walk()` 算剩余筹码；手结束写结果摘要；`ProfileUpdater` 每 N 手异步更新 `<opp>.md` | 改 session 模式 prompt/画像接入 |
 | `tools/preflop_rank.json` | 169 种起手牌单挑胜率与排名百分位（`tools/make_preflop_rank.py` 生成），`state.preflop_rank()` 读，状态里显示「起手牌 前X%」 | 翻前范围 |
-| `tools/state.py` | 截图 → 文字状态（常驻 OCR 进程 `_OCRServer` + 模板识牌，parse≈0.2s），含 `facts`/`made_desc`/`HandHist` | 机器人识别问题 |
+| `tools/state.py` | 截图 → 文字状态（常驻 OCR 进程 `_OCRServer` + 模板识牌，parse≈0.2s），含 `facts`/`made_desc`（听牌含去重“合计 N outs”）/`draw_outs`/`draw_eq`/`draw_line`（精确听牌胜率）/`preset_off`/`usable_presets`（灰档识别）/`HandHist`（换街用底池增量校正“下注到 ?”） | 机器人识别问题 |
 | `tools/ocr.swift` → `tools/ocr` | macOS Vision OCR；`serve` 常驻模式；改完 `cd tools && swiftc -O ocr.swift -o ocr` | 识别底层 |
 | `tools/bench_llm.py` | 模型延迟基准（新建连接 vs 长连接） | 查模型慢 |
 | `tools/act.py` | 按 OCR 到的按钮文字定位并点击（弃/让/跟/加注/全下） | 手动操作手机 |
@@ -37,6 +37,8 @@ description: 德州扑克（无限注 NLH）职业牌手助手 + WePoker 真机�
 | `adb_act.sh` | 早期 ADB 快捷脚本（固定坐标，部分未验证） | 只在 `tools/act.py` 不可用时 |
 | `logs/` | 系统日志，按天滚动：`logs/<YYYY-MM-DD>/`（`text__<model>.jsonl` 为文本模式主日志，另有 `unknown.jsonl`、`act.jsonl`、`replay__*.jsonl`），只保留最近 90 天（`tools/logroll.py`，可用 `EQUIPOISE_LOG_KEEP_DAYS` 调整）；根下 `stack_cache.json` 为分析缓存、`_backup/` 为旧代码备份 | 复盘 |
 | `model_test/` | 截图样本：`live/` 实时帧、`unknown/` 无法处理的界面、`act/` 动作前后对比 | 调试识别/点击 |
+| `tools/frameroll.py` | `model_test/live` 帧滚动清理：保护 golden（`tests/golden_frames.json`）和测试按名引用的帧，其余按修改时间删最旧，直到未保护帧 ≤ 4GB（`EQUIPOISE_LIVE_KEEP_GB`，0=不清理）；`tlive` 真机启动时自动执行，命令行默认只预览、`--apply` 才删 | 磁盘占用 |
+| `.gitignore` / git | 项目已 git 初始化；`model_test/`、`logs/`、`pluribus-poker-AI/`、`tools/ocr` 编译产物、`*.md.bak` 不入库 | 改代码后提交 |
 | `model_test/state1.png` | `tprobe` 默认样例图 | 测试识别+决策 |
 | `model_test/manual/` | `adb_act.sh look/shot` 手动截图（脚本已弃用） | — |
 | `pluribus-poker-AI/` | 第三方研究仓库（github 0xC000005/pluribus-poker-AI），**未接入**本项目主链路 | 仅在用户明确要求时研究 |
@@ -114,15 +116,16 @@ GTO 基线：<无对手信息时怎么打，一句话>
 python3 poker_bot.py list                                   # 列出可用模型
 python3 tools/state.py                                      # 现场截图并打印识别结果（不调模型）
 python3 poker_bot.py tprobe --model <provider/model> --img model_test/state1.raw   # 单帧测试文本模式
-python3 poker_bot.py tlive --model <provider/model> --max-sec 600 [--dry] [--budget 8 --hedge 3.8]   # 主模式
+python3 poker_bot.py tlive --model <provider/model> --max-sec 600 [--dry] [--budget 8 --hedge 3.0] [--preflop-rule]   # 主模式（--preflop-rule：翻前不问模型直接本地规则，默认关）
 python3 poker_bot.py tlive --model <m> --replay model_test/live --t0 001000 --t1 002000 [--rule]   # 离线回放，不连手机（--rule 不调模型）
 python3 tests/test_scenarios.py                            # 场景测试（改 bot_core/state 后必跑，SKIP_GOLDEN=1 更快）
 python3 tools/act.py look | fold | check | call | allin | raise 3BB | raise 1/2   # 手动操作
+python3 tools/frameroll.py [--keep-gb 4] [--apply]           # live 帧滚动清理（默认只预览）
 ```
 
 - **优先用文本模式 `tlive`**（本地识别 + 模型只做决策）。`probe/live` 是早期直接把图片丢给模型的模式，慢且不稳定。
 - 决策 prompt 在 `bot_core.py` 的 `TPROMPT`（精简版，约 600 字，状态由 `tools/state.py` 的 `brief_text()` 生成）；旧版完整 prompt 是 `TPROMPT_LONG` + `to_text()`，用 `tlive --prompt long` 切换；`tlive --prompt session --table tables/<桌> --opp <昵称> [--profile-every 10]` 用开局长 system + 画像 + 每次一条本手完整记录（真机模式把每手结果写 `tables/<桌>/bot_hands.jsonl`，每 N 手异步更新 `<opp>.md`，旧画像备份为 `.md.bak`；回放模式只写 `logs/<日期>/hands__*.jsonl`，不改画像），`to_text()` 仍用于人工查看（`tools/state.py`、`act.py look`）。改策略改 `TPROMPT`，改识别改 `state.py`，改流程改 `Bot.handle`；改完跑 `tests/test_scenarios.py`，识别有意改动用 `tests/make_golden.py --check` 看差异再刷新。
-- 延迟链路：Grabber 后台连续截图 → parse(0.2s) → 模型（长连接；3.8s 未返回发对冲请求；截图后 `--budget` 8s 仍无结果用 `rule_decide`）→ 常驻 adb shell 发点击（不阻塞）。点击后开始于 busy_until+0.25s 之前的帧丢弃。
+- 延迟链路：Grabber 后台连续截图 → parse(0.2s) → 模型（长连接；3.0s 未返回发对冲请求（`--hedge`，默认 3.0）；截图后 `--budget` 8s 仍无结果用 `rule_decide`）→ 常驻 adb shell 发点击（不阻塞）。点击后开始于 busy_until+0.25s 之前的帧丢弃。
 - 识别出的画面类型：`my_turn`、`anim`、`runit`（全下后选发一次/两次）、`profile`、`away`、`can_start`、`need_sit`、`waiting`、`other`。
 - 无法处理的界面会存到 `model_test/unknown/` 并写入 `logs/<YYYY-MM-DD>/unknown.jsonl`，优化识别时先看这里。
 - WePoker 界面事实（2026-10-30 真机实测，详见 `tools/act.py` 文件头）：
@@ -130,6 +133,7 @@ python3 tools/act.py look | fold | check | call | allin | raise 3BB | raise 1/2 
   - 没有独立全下按钮：点加注 → 滑条拖到顶 → 点确定。跟对手全下直接点跟注。
   - 行动倒计时约 12–15 秒，超时自动让牌/弃牌，所以截图后 8 秒必须出决策（`--budget`）。
   - 加注滑条展开时整屏变暗，手牌读不出来：机器人沿用记忆的牌，若原决策就是加注则直接点确定。
+  - 预设金额低于最小下注（如底池 4 时 1/3 池=1）该档变灰，读不到金额，点了等于让牌；按亮度判定（`state.preset_off`），机器人/`act.py raise` 跳过灰档，prompt 只列可用档。
 
 ### F. 复盘机器人表现
 
@@ -157,6 +161,7 @@ python3 tools/act.py look | fold | check | call | allin | raise 3BB | raise 1/2 
 - `tables/20261029_wepoker_practice/`：HU 单挑练习局，对手 `little00`。`player.log` 还没有手牌，座位表里引用的 `little00.md` 也还没建。
 - short/long 模式的 `TPROMPT` 是写死的通用单挑策略，不读画像；**session 模式**会读 `tables/<桌>/<opp>.md` 注入 system（没有画像时按基线打）。画像自动更新只基于代码记录的行动线与盈亏，看不到对手亮牌（parse 尚未识别摊牌），需要时仍按工作流 C 手动补。
 - `adb_act.sh` 的坐标来自早期截图，部分没验证过；`tools/act.py` 每次按 OCR 定位，更可靠。
+- 2026-10-30 修复（commit 见 `git log`）：灰档预设误点（“我方下注到 ?”）、`rule_decide` 危险牌面（四同花/一张成顺/三同花/大公共对）两对·顶对降级、rule_decide 强弱判断只看成牌行（原来听牌行的“顺子听牌”字样会把纯顺听当成顺子强牌）、组合听牌 outs 去重与精确胜率（004552 Td8d@KdQd9h=12 outs 到河 45%）、hedge 3.8→3.0、`--preflop-rule` 开关、live 帧滚动清理。真机 100 手复测尚未做（需用户明确要求再跑）。
 - 文档中的范围和统计参考值按 6max 100BB 现金局给出；单挑、锦标赛、短码要另行调整（单挑基线：BTN 开约 80%，BB 防守 50–60%+）。
 
 ---

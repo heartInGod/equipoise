@@ -399,17 +399,51 @@ def made_desc(hero, board):
         made = f"高牌（最大 {nm(max(hv))}，没有成对）"
     L.append(f"我方牌力(代码计算，可信): {made}")
     if len(board) < 5 and not fl and not (st_hi and st_b != st_hi):
-        draws = []
+        draws, fsuit = [], None
         for s in "shdc":
             if suits.count(s) == 4 and any(c[-1] == s for c in hero):
+                fsuit = s
                 mine = max(hv[i] for i in range(2) if hero[i][-1] == s)
                 higher = [v for v in range(mine + 1, 15) if not any(_rv(c) == v and c[-1] == s for c in board)]
                 draws.append(f"同花听牌 9 outs（我方最大同花牌 {nm(mine)}" + ("，坚果同花听）" if not higher else f"，非坚果，上面还有 {len(higher)} 张更大的同花牌）"))
         comp = [r for r in range(2, 15) if r not in allv and _straight_hi(allv + [r]) and _straight_hi(allv + [r]) != _straight_hi(bv + [r])]
         if len(comp) >= 2: draws.append(f"两头/双卡顺子听牌 {4 * len(comp)} outs")
         elif len(comp) == 1: draws.append("卡顺听牌 4 outs")
+        if fsuit and comp:      # 同花色的顺子补牌在两种听牌里都算了一次，去重
+            draws.append(f"合计 {9 + 4 * len(comp) - len(comp)} outs（去重，{len(comp)} 张同花色顺子补牌只算一次）")
         L.append("听牌: " + ("；".join(draws) if draws else "无（后门不算）"))
     return L
+
+
+def draw_outs(line):
+    """从 made_desc 的听牌行取 outs 总数：有“合计”用合计（已去重），否则把各项相加"""
+    m = re.search(r"合计 (\d+) outs", line or "")
+    return int(m.group(1)) if m else sum(int(x) for x in re.findall(r"(\d+) outs", line or ""))
+
+
+def draw_eq(outs, n_board):
+    """听牌成牌概率(%)：(下一张, 到河牌)。翻牌剩 47 张未知牌，转牌剩 46 张；到河牌按精确组合算（outs×4 在 outs>8 时高估）"""
+    if n_board == 3:
+        return outs / 47 * 100, (1 - (47 - outs) * (46 - outs) / (47 * 46)) * 100
+    if n_board == 4:
+        return outs / 46 * 100, outs / 46 * 100
+    return 0.0, 0.0
+
+
+def draw_line(line, n_board, head="听牌胜率"):
+    """made_desc 听牌行 → 给 prompt 的胜率文字（0 或 1 行）。outs 已去重，概率按剩余牌精确计算"""
+    if not (line or "").startswith("听牌") or n_board not in (3, 4):
+        return []
+    outs = draw_outs(line)
+    if not outs:
+        return []
+    nxt, river = draw_eq(outs, n_board)
+    s = f"{head} {outs} outs 下一张成牌约 {nxt:.0f}%"
+    s += f"，到河牌约 {river:.0f}%（仅跟注即全下时可用）" if n_board == 3 else "（只剩一张）"
+    if "非坚果" in line:
+        s += "；同花非坚果：对手持更大同花牌时同花 outs 会输，胜率略低于上述值"
+    return [s]
+    return 0.0, 0.0
 
 
 def facts(st):
@@ -645,11 +679,7 @@ def brief_text(st, hist=None, hist_line=True):
             e, need = vs_big_eq(pr[1]["eq"]), tc / ((pot or 0) + tc) * 100
             L.append(f"翻前面对大注 对其范围胜率约 {e:.0f}% {'≥' if e >= need else '<'} 所需 {need:.0f}%（{'够跟' if e >= need else '不够'}）")
     if md and len(board) in (3, 4):
-        outs = sum(int(x) for x in re.findall(r"(\d+) outs", md[-1])) if md[-1].startswith("听牌") else 0
-        if outs:
-            o = min(outs, 15)
-            L.append(f"听牌胜率(代码算) 下一张成牌约 {o * 2}%" + (f"，到河牌约 {min(o * 4, 60)}%（仅跟注即全下时可用）" if len(board) == 3 else "（只剩一张）")
-                     + ("；非坚果听牌要打折" if "非坚果" in md[-1] else ""))
+        L.extend(draw_line(md[-1], len(board), "听牌胜率(代码算)"))
     if hist_line and hist is not None and hist.ev:
         segs, cur = [], None
         for s, e in hist.ev:

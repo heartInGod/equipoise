@@ -28,7 +28,7 @@ TPROMPT_LONG = """你在打 WePoker 无限注德州单挑（盲注1/2，练习�
 翻前：按钮位开局约80%手牌（加注2~2.5BB）；大盲面对2~3BB开局约60%防守，强牌(77+、AJ+、KQ)3bet。
 面对3bet：只用 QQ+/AK 4bet，TT~JJ/AQ/AJs/KQs/同花连张/小对子可跟注，其余弃牌；面对4bet及以上：只继续 QQ+/AK（多为全下或跟注），其余一律弃牌。
 翻后：顶对及以上或强听牌(≥8 outs)下注/加注，价值下注2/3池，诈唬/保护1/3~1/2池；中等牌力过牌控池；
-面对下注时用「所需胜率」对比我方实际胜率（听牌按 outs×2/每张、×4/两张估算，但只有能成坚果/次坚果的听牌才算），胜率不足就弃牌；后门听牌不算 outs；无牌力就让牌或弃牌。
+面对下注时用「所需胜率」对比我方实际胜率（听牌按代码给的去重 outs 胜率，公共牌成对时打折），胜率不足就弃牌；后门听牌不算 outs；无牌力就让牌或弃牌。
 牌桌状态：
 {state}
 只输出一行 JSON，不要其他文字：
@@ -268,7 +268,7 @@ def make_model(ref):
 
 class Decider:
     """对冲请求 + 硬 deadline。raw(prompt, timeout) -> 文本。ask() 返回 (dec 或 None, info)。"""
-    def __init__(self, raw, hedge_after=3.8, max_hedge=1):
+    def __init__(self, raw, hedge_after=3.0, max_hedge=1):
         self.raw, self.hedge_after, self.max_hedge = raw, hedge_after, max_hedge
 
     def ask(self, prompt, deadline):
@@ -387,17 +387,20 @@ def rule_decide(st, hist=None):
             return call("可玩牌跟小注") if tc <= 6 else chk_fold("可玩牌面对大注")
         return chk_fold("翻前弱牌")
     md = " ".join(wpstate.made_desc(st["hero"], st["board"]))
-    strong = bool(re.search(r"两对|三条|顺子|同花\(|葫芦|四条|顶对|超对", md)) and not re.search(r"我方仅高牌|没用到手牌|公共牌三条", md)
-    medium = bool(re.search(r"一对|口袋对", md)) and not strong
-    if strong and _downgrade(st["hero"], st["board"], md):
+    made = md.split("听牌:")[0]               # 强弱只看成牌部分：听牌行里有“顺子听牌/顺子补牌”字样，不能当成顺子
+    strong = bool(re.search(r"两对|三条|顺子|同花\(|葫芦|四条|顶对|超对", made)) and not re.search(r"我方仅高牌|没用到手牌|公共牌三条", made)
+    medium = bool(re.search(r"一对|口袋对", made)) and not strong
+    if strong and _downgrade(st["hero"], st["board"], made):
         strong, medium = False, True
-    outs = sum(int(x) for x in re.findall(r"(\d+) outs", md.split("听牌:")[-1])) if "听牌:" in md else 0
+    outs = wpstate.draw_outs(md.split("听牌:")[-1]) if "听牌:" in md else 0
     if strong:
         if tc == 0 and can_bet: return bet(_pick_preset(st, ["2/3", "1/2"]), "强牌价值下注")
         return call("强牌跟注") if tc else chk_fold("强牌")
     if tc == 0: return chk_fold("免费看牌")
     if medium and need < 30: return call(f"中等牌 需{need:.0f}%")
-    if outs and outs * (4 if len(st["board"]) == 3 else 2) >= need: return call(f"{outs}outs 需{need:.0f}%")
+    if outs:                                 # 翻牌圈按到河牌（与旧 outs×4 口径一致），转牌按下一张
+        nxt, river = wpstate.draw_eq(outs, len(st["board"]))
+        if (river if len(st["board"]) == 3 else nxt) >= need: return call(f"{outs}outs 需{need:.0f}%")
     return chk_fold(f"牌力不足 需{need:.0f}%")
 
 
@@ -496,8 +499,9 @@ class Bot:
     """handle(src, st, t_shot, wall0) 处理一帧并返回日志记录。
     t_shot = 帧时间（真机=截图开始的 wall time；回放=文件名时间）；wall0 = 该帧开始处理/截图的 wall time（算 deadline 用）。"""
     def __init__(self, io, decider=None, writer=None, log_path=None, live_dir=None, unk_dir=None, unk_log=None,
-                 dry=False, stuck=25, budget=8.0, q_wait=2.0, replay=False, prompt="short", session=None):
+                 dry=False, stuck=25, budget=8.0, q_wait=2.0, replay=False, prompt="short", session=None, preflop_rule=False):
         self.io, self.decider, self.writer, self.log_path = io, decider, writer, log_path
+        self.preflop_rule = preflop_rule  # True：翻前不问模型，直接本地规则（省一次模型往返）
         self.live_dir, self.unk_dir, self.unk_log = live_dir, unk_dir, unk_log
         self.dry, self.stuck, self.budget, self.q_wait, self.replay = dry, stuck, budget, q_wait, replay
         self.sess = session              # session_prompt.HandSession（--prompt session）
@@ -527,12 +531,13 @@ class Bot:
         return str(stem)
 
     def decide(self, st, wall0):
-        """模型（对冲+deadline）-> 失败用本地规则"""
+        """模型（对冲+deadline）-> 失败用本地规则；preflop_rule 时翻前直接本地规则"""
+        use_model = self.decider is not None and not (self.preflop_rule and not st["board"])
         if self.sess is not None:
             tb = time.time()
             req, txt = self.sess.build(st, self.hist)
             t_build = time.time() - tb
-            dec, info = self.decider.ask(req, wall0 + self.budget) if self.decider is not None else (None, {})
+            dec, info = self.decider.ask(req, wall0 + self.budget) if use_model else (None, {})
             info["t_build"] = round(t_build, 4)
             if dec is None:
                 dec = rule_decide(st, self.hist); info["rule"] = True
@@ -542,7 +547,7 @@ class Bot:
         txt = self.state_fn(st, self.hist)
         info = {"t_build": round(time.time() - tb, 4)}
         dec = None
-        if self.decider is not None:
+        if use_model:
             dec, info = self.decider.ask(self.prompt.format(state=txt), wall0 + self.budget)
         if dec is None:
             dec = rule_decide(st, self.hist); info["rule"] = True
@@ -651,6 +656,12 @@ def run_live(a):
     """真机：Grabber 连续截图 -> parse -> Bot.handle"""
     logroll.day_dir()                                   # 建今天的目录并清理 90 天前的日志
     live = ROOT / "model_test" / "live"; live.mkdir(parents=True, exist_ok=True)
+    try:                                                # 帧滚动清理：保护 golden/测试帧，未保护帧超过上限(默认4GB)删最旧的
+        import frameroll
+        dels, _, after, _ = frameroll.cleanup(live)
+        if dels: print(f"[frameroll] 删除最旧帧 {len(dels)} 张，未保护帧剩 {after / 1024 ** 3:.2f}GB", flush=True)
+    except Exception as e:
+        print(f"[frameroll] 清理失败(忽略): {e}", flush=True)
     unk = ROOT / "model_test" / "unknown"; unk.mkdir(parents=True, exist_ok=True)
     io = AdbIO()
     print(f"[io] 常驻 adb shell: {io.persistent}", flush=True)
@@ -659,7 +670,7 @@ def run_live(a):
     model = make_model(a.model)
     bot = Bot(io, Decider(model, hedge_after=a.hedge), w, logroll.DailyPath(f"text__{a.model.replace('/', '__')}.jsonl"), live, unk,
               logroll.DailyPath("unknown.jsonl"), dry=a.dry, stuck=a.stuck, budget=a.budget, prompt=a.prompt,
-              session=make_session(a, model, live=not a.dry))
+              session=make_session(a, model, live=not a.dry), preflop_rule=getattr(a, "preflop_rule", False))
     t0, min_t = time.time(), 0.0
     while time.time() - t0 < a.max_sec:
         src, t_shot = grab.get(min_t)
@@ -684,7 +695,7 @@ def run_replay(a):
     io, w = RecIO(), AsyncWriter()
     decider = None if getattr(a, "rule", False) else Decider(make_model(a.model), hedge_after=a.hedge)
     bot = Bot(io, decider, w, logroll.path(f"replay__{time.strftime('%m%d_%H%M')}.jsonl"), replay=True, stuck=1e9, budget=a.budget, prompt=a.prompt,
-              session=make_session(a))
+              session=make_session(a), preflop_rule=getattr(a, "preflop_rule", False))
     for fp in frames:
         hh = fp.name[:6]
         clock = int(hh[:2]) * 3600 + int(hh[2:4]) * 60 + int(hh[4:6])

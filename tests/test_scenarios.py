@@ -289,7 +289,7 @@ class TestExecute(unittest.TestCase):
 
 # ---------------------------------------------------------------- 5. 延迟 / 模型异常（时间按 1/10 缩放：0.1s = 实际 1s）
 K = 0.1
-HEDGE, BUDGET = 3.8 * K, 8.0 * K
+HEDGE, BUDGET = 3.0 * K, 8.0 * K     # 与 Decider / --hedge 默认值一致
 LIMIT = 12 * K          # 截图开始 -> 动作发出 的硬上限
 
 
@@ -303,7 +303,18 @@ class TestLatency(unittest.TestCase):
         return r, dt
 
     def test_fast_3s(self):
-        r, dt = self.run_bot(fixed(OK_CALL, 3 * K)); self.assertEqual(r["llm"]["n_req"], 1); self.assertLess(dt, 3.5 * K)
+        r, dt = self.run_bot(fixed(OK_CALL, 2.5 * K)); self.assertEqual(r["llm"]["n_req"], 1); self.assertLess(dt, 3 * K)
+
+    def test_default_hedge(self):
+        self.assertEqual(C.Decider(None).hedge_after, 3.0)
+
+    def test_preflop_rule_skips_model(self):
+        raw = fixed(OK_RAISE, 0)
+        b, io = bot(C.Decider(raw, hedge_after=HEDGE), budget=BUDGET, preflop_rule=True)
+        r = b.handle("x", mk(buttons={"弃牌": FOLD, "跟注": CALL, "加注": RAISE}, nums={"to_call": 1, "opp_bet": 2, "my_bet": 1}), 100, wall0=time.time())
+        self.assertEqual(raw.calls, [], "翻前不应调用模型"); self.assertTrue(r["llm"].get("rule")); self.assertEqual(len(io.taps), 1)
+        r = b.handle("x", mk(board=("Ac", "7s", "2d"), buttons={"弃牌": FOLD, "让牌": CHECK, "加注": RAISE}), 110, wall0=time.time())
+        self.assertEqual(len(raw.calls), 1, "翻后照常问模型")
 
     def test_slow_6s_hedge_wins(self):
         raw = seq_model((6 * K, OK_CALL), (1.5 * K, OK_CALL))
@@ -343,6 +354,25 @@ class TestLatency(unittest.TestCase):
 
 
 # ---------------------------------------------------------------- 6. 行动历史 / 牌力 / 规则
+class TestFrameRoll(unittest.TestCase):
+    def test_keeps_protected_and_newest(self):
+        import frameroll as F
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); (root / "tests").mkdir(); live = root / "live"; live.mkdir()
+            (root / "tests" / "golden_frames.json").write_text(json.dumps({"model_test/live/000001_my_turn.raw": {}}))
+            (root / "tests" / "t.py").write_text('f = "000002_005_other"')
+            for i in range(1, 7):
+                p = live / f"00000{i}_my_turn.raw" if i != 2 else live / "000002_005_other.raw"
+                p.write_bytes(b"x" * 1000); os.utime(p, (i, i))
+            (live / "watch.log").write_text("log")
+            dels, before, after, n_prot = F.cleanup(live, keep_gb=2500 / 1024 ** 3, root=root)
+            self.assertEqual(n_prot, 2); self.assertEqual(before, 4000); self.assertEqual(after, 2000)
+            self.assertEqual(sorted(p.name for p in dels), ["000003_my_turn.raw", "000004_my_turn.raw"])
+            left = sorted(p.name for p in live.iterdir())
+            self.assertEqual(left, ["000001_my_turn.raw", "000002_005_other.raw", "000005_my_turn.raw", "000006_my_turn.raw", "watch.log"])
+            self.assertEqual(F.cleanup(live, keep_gb=0, root=root)[0], [])
+
+
 class TestHandHist(unittest.TestCase):
     def st(self, opp, my, hero=("Ah", "Kd"), board=(), dealer=(720, 900)):
         return mk(hero=hero, board=board, dealer=dealer, nums={"opp_bet": opp, "my_bet": my})
@@ -431,6 +461,20 @@ class TestMadeDesc(unittest.TestCase):
             with self.subTest(hero=hero, board=board):
                 self.assertIn(want, " ".join(S.made_desc(list(hero), list(board))))
 
+    def test_combo_draw_outs_dedup(self):
+        """004552：Td8d 在 Kd Qd 9h 上 = 同花 9 + 卡J 4 − Jd 重复 = 12 outs；到河牌精确约 45%（旧 outs×4 写成 52%+打折）"""
+        md = S.made_desc(["Td", "8d"], ["Kd", "Qd", "9h"])
+        self.assertIn("合计 12 outs", md[-1])
+        self.assertEqual(S.draw_outs(md[-1]), 12)
+        nxt, river = S.draw_eq(12, 3)
+        self.assertAlmostEqual(nxt, 25.5, delta=0.2)
+        self.assertAlmostEqual(river, 45.0, delta=0.2)
+        line = S.draw_line(md[-1], 3)[0]
+        self.assertIn("12 outs", line); self.assertIn("到河牌约 45%", line); self.assertNotIn("要打折", line)
+        self.assertEqual(S.draw_outs("听牌: 两头/双卡顺子听牌 8 outs"), 8)
+        self.assertEqual(S.draw_line("听牌: 无（后门不算）", 3), [])
+        self.assertIn("只剩一张", S.draw_line("听牌: 卡顺听牌 4 outs", 4)[0])
+
     def test_incomplete_returns_empty(self):
         self.assertEqual(S.made_desc(["?s", "8h"], ["9h", "Ah", "5h"]), [])
 
@@ -463,6 +507,17 @@ class TestRules(unittest.TestCase):
     def test_board_pair_is_not_strong(self):
         d = self.act(hero=("Ah", "Kd"), board=("7c", "7s", "2d"), buttons={"弃牌": FOLD, "跟注": CALL}, nums={"to_call": 20, "pot": 30})
         self.assertEqual(d["act"], "弃牌")
+
+    def test_draw_text_not_mistaken_for_straight(self):
+        """听牌行含“顺子听牌/顺子补牌”字样，旧正则把纯听牌当成顺子强牌（价值下注、跟全下）"""
+        self.assertEqual(self._bet_or_check(("9c", "8d"), ("7h", "6s", "2c")), "让牌")          # 两头顺听，无成牌
+        self.assertEqual(self._bet_or_check(("Td", "8d"), ("Kd", "Qd", "9h")), "让牌")          # 004552 组合听
+        d = self.act(hero=("Td", "8d"), board=("Kd", "Qd", "9h"), buttons={"弃牌": FOLD, "All in": [1064, 2733]},
+                     nums={"pot": 486, "pot_prev": 24, "opp_bet": 462, "my_bet": 0, "to_call": 314, "my_stack": 314})
+        self.assertEqual(d["act"], "弃牌", d)                                                  # 12 outs 到河 45% < 所需 48%
+        d = self.act(hero=("Td", "8d"), board=("Kd", "Qd", "9h"), buttons={"弃牌": FOLD, "跟注": CALL},
+                     nums={"pot": 60, "pot_prev": 24, "opp_bet": 36, "my_bet": 0, "to_call": 36, "my_stack": 300})
+        self.assertEqual(d["act"], "跟注", d)                                                  # 需 37.5%，45% 够
 
     def _bet_or_check(self, hero, board):
         return self.act(hero=hero, board=board, presets=POT_PRE, buttons={"弃牌": FOLD, "让牌": CHECK, "下注": RAISE})["act"]

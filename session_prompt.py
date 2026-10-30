@@ -41,7 +41,8 @@ SYS_STATIC = """你是无限注德州扑克单挑(HU)职业牌手，正在 WePok
 - 顶对及以上价值下注/加注约2/3池；≥8 outs 强听牌可半诈唬 1/3~1/2 池。
 - 翻前加注方在干燥牌面可 1/3 池持续下注；中等牌力过牌控池；无牌力无听牌放弃。
 - 面对下注：用「听牌胜率」或成牌实际胜率对比「所需胜率」，不够就弃（差≤5%且有位置可跟）；后门听牌不算。
-- 非坚果听牌、对子面的同花/顺子听牌要打折。
+- 「听牌胜率」已按去重 outs 精确计算，直接用；只有公共牌成对时同花/顺子听要明显打折（对手可能已成葫芦），非坚果同花听只需小幅打折。
+- 翻牌圈 12+ outs（同花+顺子组合听）面对全下，到河牌胜率接近所需胜率时倾向跟注。
 偏移：只在「对手画像」有证据的漏洞上偏移（本局统计对照下面「单挑统计参考值」判断偏高/偏低），样本少（<100 手）时只做小幅偏移、贴近基线。
 {exploit}{reference}
 
@@ -270,11 +271,7 @@ def snapshot_bb(st, hist):
             e = wpstate.vs_big_eq(pr[1]["eq"])
             L.append(f"翻前面对大注 对其范围胜率约 {e:.0f}% {'≥' if e >= need else '<'} 所需 {need:.0f}%（{'够跟' if e >= need else '不够'}）")
     if md and len(board) in (3, 4):
-        outs = sum(int(x) for x in re.findall(r"(\d+) outs", md[-1])) if md[-1].startswith("听牌") else 0
-        if outs:
-            o = min(outs, 15)
-            L.append(f"听牌胜率 下一张成牌约 {o * 2}%" + (f"，到河牌约 {min(o * 4, 60)}%（仅跟注即全下时可用）" if len(board) == 3 else "（只剩一张）")
-                     + ("；非坚果听牌要打折" if "非坚果" in md[-1] else ""))
+        L.extend(wpstate.draw_line(md[-1], len(board)))
     opts = []
     for k in b:
         if k == "跟注": opts.append(f"跟注 {bb(tc)}BB" if tc else "跟注")

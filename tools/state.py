@@ -28,7 +28,8 @@ def capture(path="/tmp/wp.raw", wait_sec=600):
             return path
         if time.time() - t0 > wait_sec:
             raise RuntimeError(f"adb 设备 {DEV} 掉线超过 {wait_sec}s")
-        print(f"[capture] 设备 {DEV} 无响应，2s 后重试", file=sys.stderr, flush=True)
+        import logroll
+        logroll.logger("state").warning("[capture] 设备 %s 无响应，2s 后重试", DEV)
         time.sleep(2)
 
 

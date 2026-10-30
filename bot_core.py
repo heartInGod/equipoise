@@ -18,6 +18,8 @@ sys.path.insert(0, str(ROOT / "tools"))
 import state as wpstate
 import logroll
 
+LOG = logroll.logger("bot")                               # 标准日志 INFO/WARN/ERROR；tlive 时同时写 logs/<日期>/ops.log
+
 ACTS = ("弃牌", "让牌", "跟注", "下注", "加注", "全下")
 ALLIN_KEYS = ("All in", "ALL IN", "全下")
 
@@ -135,7 +137,7 @@ class Grabber(threading.Thread):
             except Exception: ok = False
             if not ok:
                 self.fails += 1
-                if self.fails % 5 == 1: print(f"[grab] 设备无响应（{self.fails} 次），1s 后重试", file=sys.stderr, flush=True)
+                if self.fails % 5 == 1: LOG.warning("[grab] 设备无响应（%d 次），1s 后重试", self.fails)
                 time.sleep(1); continue
             self.fails = 0
             slot = self.ring / f"{i % self.n}.raw"; i += 1
@@ -178,7 +180,7 @@ class AsyncWriter(threading.Thread):
                 else:
                     with open(path, "w") as f: f.write(text)
             except Exception as e:
-                print(f"[writer] {e}", file=sys.stderr)
+                LOG.error("[writer] 写 %s 失败: %s", path, e, exc_info=True)
             self.q.task_done()
 
     def flush(self): self.q.join()
@@ -522,6 +524,7 @@ class Bot:
     def save_unknown(self, src, st, why):
         if self.unk_dir is None: return f"(不存图: {why})"
         stem = Path(self.unk_dir) / f"{time.strftime('%m%d_%H%M%S')}_{st['screen']}"
+        LOG.warning("[异常界面] %s（截图 %s.raw）", why, stem.relative_to(ROOT) if stem.is_relative_to(ROOT) else stem, extra={"file_only": True})
         keep_frame(src, f"{stem}.raw")
         if self.writer:
             self.writer.put_file(f"{stem}.txt", f"原因: {why}\n" + wpstate.to_text(st))
@@ -644,11 +647,33 @@ class Bot:
 
 
 # ======================= 运行 =======================
-def make_session(a, model=None, live=False):
+SCREEN_CN = {"my_turn": "我的回合", "anim": "动画", "runit": "发牌选择", "profile": "资料卡", "away": "离开", "can_start": "可开局",
+             "need_sit": "需入座", "waiting": "等待", "other": "其他"}
+
+
+def ops_line(rec, st):
+    """ops.log 的一行消息（人看的实时操作，时间由日志格式给出）：画面 手牌 [公共牌] 底池/需跟 | 决策(来源 耗时) 理由 -> 点击 | 总延迟 | 备注"""
+    n, d = st.get("nums") or {}, rec.get("dec")
+    L = [SCREEN_CN.get(rec.get("screen"), rec.get("screen"))]
+    if rec.get("hero"): L.append(rec["hero"])
+    if rec.get("board"): L.append(f"[{rec['board']}]")
+    if n.get("pot") is not None: L.append(f"池{n['pot'] / 2:g}BB" + (f" 需跟{n['to_call'] / 2:g}BB" if n.get("to_call") else ""))
+    s = " ".join(L)
+    if d:
+        src = "规则" if (rec.get("llm") or {}).get("rule") else f"模型{rec['t_llm']}s" if rec.get("t_llm") is not None else "重试"
+        s += f" | {d.get('act')}{' ' + str(d['size']) if d.get('size') else ''}（{src}）{str(d.get('why') or '')[:40]}"
+    s += f" -> {rec.get('act')}"
+    if rec.get("lat") is not None: s += f" | {rec['lat']}s"
+    if rec.get("note"): s += f" | {rec['note']}"
+    return s
+
+
+def make_session(a, model=None, live=False, log=None):
     """--prompt session 时构造 HandSession。真机：每手写本桌 tables/<桌>/hands.jsonl（对局流水）+ msgs.jsonl（模型对话，hid 关联），
     计数直接加进全局对手库 players/opponents.db，并按 --profile-every 异步更新本桌画像 tables/<桌>/<opp>.md；
     回放：流水/对话写 logs/<日期>/hands__*.jsonl、msgs__*.jsonl，不写库、不写桌目录"""
     if getattr(a, "prompt", None) != "session": return None
+    log = log or (lambda m: print(m, flush=True))
     from session_prompt import HandSession, ProfileUpdater, TABLES
     tdir = ROOT / a.table if getattr(a, "table", None) else (TABLES / time.strftime("%Y%m%d_auto") if live else None)
     if live: new_table(tdir)
@@ -666,13 +691,13 @@ def make_session(a, model=None, live=False):
             from session_prompt import _hand_files, _profile_files
             store = oppdb.open_db(_hand_files(), _profile_files())
             np_, nh = store.counts()
-            print(f"[oppdb] 对手 {np_} 人 / 累计 {nh} 手" + (f"（新库，从 jsonl 重建 {store.synced} 手）" if store.synced else "") + f"，打开 {store.sync_ms:.0f}ms，识别到对手后按需查库", flush=True)
+            log(f"[oppdb] 对手 {np_} 人 / 累计 {nh} 手" + (f"（新库，从 jsonl 重建 {store.synced} 手）" if store.synced else "") + f"，打开 {store.sync_ms:.0f}ms，识别到对手后按需查库")
         except Exception as e:
-            print(f"[oppdb] 打开失败，退回扫 jsonl: {type(e).__name__}: {e}", flush=True)
+            LOG.error("[oppdb] 打开失败，退回扫 jsonl: %s: %s", type(e).__name__, e, exc_info=True)
     upd = ProfileUpdater(model, tdir, opp, every=a.profile_every, store=store) if live and model and a.profile_every > 0 else None
     return HandSession(tdir, opp, hands_log=hl, msgs_log=ml, on_hand_end=upd, warm=warm,
-                       store=store, store_write=live,
-                       log=lambda m: print(m, flush=True))
+                       store=store, store_write=live, log=log,
+                       on_summary=lambda line: log("[手牌结束] " + line))
 
 
 def new_table(tdir):
@@ -689,22 +714,25 @@ def new_table(tdir):
 def run_live(a):
     """真机：Grabber 连续截图 -> parse -> Bot.handle"""
     logroll.day_dir()                                   # 建今天的目录并清理 90 天前的日志
+    logroll.ops_start()                                 # logs/<日期>/ops.log：所有 INFO/WARN/ERROR + 未捕获异常，tail -f 看
     live = ROOT / "model_test" / "live"; live.mkdir(parents=True, exist_ok=True)
     try:                                                # 帧滚动清理：保护 golden/测试帧，未保护帧超过上限(默认30GB)删最旧的
         import frameroll
         dels, _, after, _ = frameroll.cleanup(live)
-        if dels: print(f"[frameroll] 删除最旧帧 {len(dels)} 张，未保护帧剩 {after / 1024 ** 3:.2f}GB", flush=True)
+        if dels: LOG.info("[frameroll] 删除最旧帧 %d 张，未保护帧剩 %.2fGB", len(dels), after / 1024 ** 3)
     except Exception as e:
-        print(f"[frameroll] 清理失败(忽略): {e}", flush=True)
+        LOG.warning("[frameroll] 清理失败(忽略): %s", e)
     unk = ROOT / "model_test" / "unknown"; unk.mkdir(parents=True, exist_ok=True)
     io = AdbIO()
-    print(f"[io] 常驻 adb shell: {io.persistent}", flush=True)
+    LOG.info("[io] 常驻 adb shell: %s", io.persistent)
     grab = Grabber(io, logroll.LOGS / ".ring"); grab.start()
     w = AsyncWriter()
+    say = lambda m: (LOG.error if "失败" in m else LOG.info)("%s", m)   # session 的消息；“…失败”记 ERROR
+    say(f"===== tlive 启动 model={a.model} prompt={a.prompt} table={getattr(a, 'table', None)} dry={a.dry} =====")
     model = make_model(a.model)
     bot = Bot(io, Decider(model, hedge_after=a.hedge), w, logroll.DailyPath(f"text__{a.model.replace('/', '__')}.jsonl"), live, unk,
               logroll.DailyPath("unknown.jsonl"), dry=a.dry, stuck=a.stuck, budget=a.budget, prompt=a.prompt,
-              session=make_session(a, model, live=not a.dry), preflop_rule=getattr(a, "preflop_rule", True))
+              session=make_session(a, model, live=not a.dry, log=say), preflop_rule=getattr(a, "preflop_rule", True))
     t0, min_t = time.time(), 0.0
     while time.time() - t0 < a.max_sec:
         src, t_shot = grab.get(min_t)
@@ -715,8 +743,10 @@ def run_live(a):
         if rec["act"] != "wait" or rec.get("note"):
             rec_p["grab_period"] = round(sum(grab.periods) / len(grab.periods), 2) if grab.periods else None
             print(json.dumps(rec_p, ensure_ascii=False), flush=True)
-    grab.stop = True; w.flush()
+            (LOG.warning if str(rec["act"]).startswith(("unknown", "兜底", "noop")) else LOG.info)("%s", ops_line(rec, st), extra={"file_only": True})
     if bot.sess: bot.sess.flush()
+    say("===== tlive 结束 =====")
+    grab.stop = True; w.flush(); logroll.ops_flush()
 
 
 def run_replay(a):

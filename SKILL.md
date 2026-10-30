@@ -24,7 +24,7 @@ description: 德州扑克（无限注 NLH）职业牌手助手 + WePoker 真机�
 | `tables/<table_id>/` | **每张桌一个目录**：`table.md` 桌信息（session prompt 读前言 bullet：平台/级别/单位/Hero 昵称）、`hands.jsonl` **本桌对局流水**（只追加，每手一行 `session_prompt.hand_detail`：`hid`=`<运行开始时间>-<4位随机>-<手序号>`（导入的为 `imp-<来源>-<序号>`）、`t`/`n`/`opp`（未识别为 null，不计入库）/`pos`/`hero`/`board`/`ev` 原始行动线（筹码）/`how`/`delta`/`table`/`start_bb`、`acts` 逐动作（街/谁/位置/类型/投入/本街累计到/动作前底池/剩余，BB）、`msgs`=对话文件路径）、`msgs.jsonl` **本桌模型对话**（每行 `{hid,t,opp,msgs}`，不进 git，与流水按 `hid` 双向关联）、`<opp>.md` **该对手在本桌的画像**（同一人不同桌可不同；`ProfileUpdater` 每 N 手更新，旧版备份 `.md.bak`） | 读写对局数据/查某一手 |
 | `poker_bot.py` | 命令行入口（list / tprobe / tlive）、模型配置读取 `load_providers`、通用 `call_model` | 跑机器人 |
 | `bot_core.py` | 机器人核心：`TPROMPT`、`Bot.handle`（每帧状态机）、`execute` 动作映射、`rule_decide` 本地规则兜底、`Decider`（对冲请求+deadline）、`AnthropicKA` 长连接池、`Grabber` 后台截图、`AdbIO` 常驻 adb shell、`AsyncWriter` | 改策略/流程/延迟 |
-| `tests/test_scenarios.py` | 场景测试（104 例，不连手机不调模型）；场景清单 `tests/SCENARIOS.md`；golden 生成 `tests/make_golden.py` | 改代码后必跑 |
+| `tests/test_scenarios.py` | 场景测试（106 例，不连手机不调模型）；场景清单 `tests/SCENARIOS.md`；golden 生成 `tests/make_golden.py` | 改代码后必跑 |
 | `session_prompt.py` | `--prompt session`：`SYS_STATIC` 开局长 system（牌桌/规则/策略/偏移表 + `_reference()` 参考资料块：gto.md §8.1 单挑统计参考值/§6.2/§2.5/§2.6/§7、technology.md §2.4/§4.1/§4.2，改这些章节会直接改 prompt；prompt caching）+ 每手注入对手画像与最近几手；`HandSession` 每次决策发一条本手完整记录（`手牌 #n`、当前手牌，紧跟未弃牌对手的本局统计画像块，再逐街逐动作 `位置[用户名] 动作，剩余 xBB`、BB 单位快照（翻后含 `SPR`=双方剩余较小者÷有效底池），结尾“现在根据用户行为、画像和相关数据进行决策行动”），本局统计由 `opp_stats()` 从已结束的手算出、`walk()` 算剩余筹码；手结束写结果摘要；`find_profile` 取画像（本桌 `<opp>.md` 优先，其次库里最近一份）；`ProfileUpdater` 每 N 手异步更新本桌 `<opp>.md` | 改 session 模式 prompt/画像接入 |
 | `tools/preflop_rank.json` | 169 种起手牌单挑胜率与排名百分位（`tools/make_preflop_rank.py` 生成），`state.preflop_rank()` 读，状态里显示「起手牌 前X%」 | 翻前范围 |
 | `tools/state.py` | 截图 → 文字状态（常驻 OCR 进程 `_OCRServer` + 模板识牌，parse≈0.2s），含 `facts`/`made_desc`（听牌含去重“合计 N outs”）/`draw_outs`/`draw_eq`/`draw_line`（精确听牌胜率）/`preset_off`/`usable_presets`（灰档识别）/`HandHist`（换街用底池增量校正“下注到 ?”） | 机器人识别问题 |
@@ -35,7 +35,7 @@ description: 德州扑克（无限注 NLH）职业牌手助手 + WePoker 真机�
 | `tools/replay_hand.py` / `replay_summary.py` / `show_replay.py` | 离线回放、汇总、逐帧打印 | 改 prompt 后对比新旧决策 |
 | `tools/analyze_session.py` | 会话分析：模型错误/超时率、耗时、bb/100 | 复盘一晚的机器人表现 |
 | `adb_act.sh` | 早期 ADB 快捷脚本（固定坐标，部分未验证） | 只在 `tools/act.py` 不可用时 |
-| `logs/` | 系统日志，按天滚动：`logs/<YYYY-MM-DD>/`（`text__<model>.jsonl` 为文本模式主日志，另有 `unknown.jsonl`、`act.jsonl`、`replay__*.jsonl`），只保留最近 90 天（`tools/logroll.py`，可用 `EQUIPOISE_LOG_KEEP_DAYS` 调整）；根下 `stack_cache.json` 为分析缓存、`_backup/` 为旧代码备份 | 复盘 |
+| `logs/` | 系统日志，按天滚动：`logs/<YYYY-MM-DD>/`（`text__<model>.jsonl` 为文本模式主日志（每帧一行 JSON）；`ops.log` 为**人看的实时操作 + 异常日志**（tlive 真机/--dry 写，标准后端格式 `2026-10-30 18:20:01.123 INFO  [MainThread] bot - 消息`，级别 INFO/WARN/ERROR：每个动作一行 INFO“画面 手牌 [公共牌] 池/需跟 | 决策（模型Ns/规则）理由 -> 点击 | 延迟 | 备注”（unknown/兜底/noop 记 WARN），另有启动/结束、对手识别、每手摘要；设备无响应/异常界面 WARN，写盘/库/画像失败与未捕获异常 ERROR + traceback；代码里统一用 `logroll.logger("<模块>")` 打日志，QueueListener 后台线程写、跨零点换文件，`extra={"file_only": True}` 只进文件不上控制台；`tail -f` 看）；另有 `unknown.jsonl`、`act.jsonl`、`replay__*.jsonl`），只保留最近 90 天（`tools/logroll.py`，可用 `EQUIPOISE_LOG_KEEP_DAYS` 调整）；根下 `stack_cache.json` 为分析缓存、`_backup/` 为旧代码备份 | 复盘 |
 | `model_test/` | 截图样本：`live/` 实时帧、`unknown/` 无法处理的界面、`act/` 动作前后对比 | 调试识别/点击 |
 | `players/` | **全局对手库**，只有 `players/opponents.db`（SQLite，不进 git，可随时 `players.py rebuild` 重建）：`players` 表每个对手一行——`key`(name_key，容忍 0/O) 主键、首末出现时间、每个统计的分子/分母各一列计数器（`n` 手数、`vp_n`/`vp`、`won`/`vp_won`/`net`、`pfr`、`vs_open`/`b3`、`f3_opp`/`b4`、`cb_opp`/`cb`、`wtsd`/`wsd` 等，口径见 `session_prompt.STAT_FIELDS`），**每手结束直接 UPSERT 累加，不读 jsonl**；`profile`/`ptype`=该对手**最近一份画像**（各桌 `<opp>.md` 里最新修改的，供没有本桌画像时作先验）；视图 `player_rates` 给出百分比。**对局明细不进库**，在各桌 `hands.jsonl`（库重建的唯一来源，新库/`VERSION` 升级时读一遍，平时不读） | 换桌/新对手 |
 | `tools/oppdb.py` | 对手库实现：`open_db`（新库/升级时从各桌 hands.jsonl 重建，平时不读 jsonl；刷新画像，不热加载）、`lookup`(按主键查库)、`pop`(群体参考=全体合计−该对手，合计首次 SUM 后缓存增量维护)、`add_hands`(逐手 UPSERT 累加计数)、`rebuild`(计数清零从明细 jsonl 重算，画像保留)、`rates`(读 `player_rates`)、`sync_profiles`；改表结构要升 `VERSION`，打开时 `user_version` 不符会删表并从 jsonl 全量重算 | 改库结构 |
@@ -116,6 +116,8 @@ python3 tools/state.py                                      # 现场截图并打
 python3 poker_bot.py tprobe --model <provider/model> --img model_test/state1.raw   # 单帧测试文本模式
 python3 poker_bot.py tlive --model <provider/model> --max-sec 600 [--dry] [--budget 8 --hedge 3.0] [--no-preflop-rule]   # 主模式（翻前默认不问模型、直接本地规则；--no-preflop-rule 让翻前也问模型）
 python3 poker_bot.py tlive --model <m> --replay model_test/live --t0 001000 --t1 002000 [--rule]   # 离线回放，不连手机（--rule 不调模型）
+tail -f logs/$(date +%F)/ops.log                           # 实时看机器人操作 + 异常（跨零点后换新文件，需重开）
+tail -f logs/$(date +%F)/ops.log | grep -v --line-buffered " INFO  \["   # 只看 WARN/ERROR（traceback 行无级别，会保留）
 python3 tests/test_scenarios.py                            # 场景测试（改 bot_core/state 后必跑，SKIP_GOLDEN=1 更快）
 python3 tools/act.py look | fold | check | call | allin | raise 3BB | raise 1/2   # 手动操作
 python3 tools/frameroll.py [--keep-gb 30] [--apply]           # live 帧滚动清理（默认只预览）

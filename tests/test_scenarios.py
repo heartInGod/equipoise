@@ -552,6 +552,37 @@ class TestRules(unittest.TestCase):
 
 
 # ---------------------------------------------------------------- 7. 基础设施
+class TestLogroll(unittest.TestCase):
+    def test_ops_log_format_levels_uncaught(self):
+        """标准日志：时间.毫秒 级别 [线程] 模块 - 消息；INFO->stdout、WARN/ERROR->stderr；file_only 只进文件；
+        ops_start 后写 logs/<日期>/ops.log，子线程未捕获异常记 ERROR + traceback（子进程跑，不污染本进程的 hook）"""
+        import subprocess
+        with tempfile.TemporaryDirectory() as d:
+            code = f"""
+import sys, threading; sys.path.insert(0, {str(ROOT / 'tools')!r})
+from pathlib import Path
+import logroll; logroll.LOGS = Path({d!r})
+log = logroll.logger("bot"); log.info("启动前只打印")
+logroll.ops_start()
+log.info("动作 %s", "跟注"); log.warning("画面卡住"); log.error("写失败", extra={{"file_only": True}})
+th = threading.Thread(target=lambda: 1 / 0, name="grab"); th.start(); th.join()
+logroll.ops_flush()
+print(logroll.path("ops.log"))
+"""
+            r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+            out, err = r.stdout.splitlines(), r.stderr
+            lines = Path(out[-1]).read_text().splitlines()
+        pat = r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{3} "
+        self.assertRegex(out[0], pat + r"INFO  \[MainThread\] bot - 启动前只打印$")
+        self.assertRegex(out[1], pat + r"INFO  \[MainThread\] bot - 动作 跟注$")
+        self.assertIn("WARN  [MainThread] bot - 画面卡住", err); self.assertNotIn("写失败", err + r.stdout)   # file_only 不上控制台
+        self.assertFalse(any("启动前只打印" in l for l in lines))
+        self.assertRegex(lines[0], pat + r"INFO  \[MainThread\] bot - 动作 跟注$")
+        self.assertIn("WARN  [MainThread] bot - 画面卡住", lines[1]); self.assertIn("ERROR [MainThread] bot - 写失败", lines[2])
+        self.assertIn("ERROR [grab] uncaught - 未捕获异常（线程 grab）: ZeroDivisionError", lines[3])
+        self.assertIn("Traceback", "\n".join(lines[4:])); self.assertIn("ZeroDivisionError: division by zero", lines[-1])
+
+
 class TestSession(unittest.TestCase):
     """--prompt session：开局长 system(缓存) + 手内多轮；新手牌时结算上一手"""
     def setUp(self):
@@ -717,6 +748,21 @@ class TestSession(unittest.TestCase):
         self.assertNotEqual(sess._writer.ident, threading.get_ident())
         gate.set(); sess.flush()
         self.assertEqual([json.loads(l)["hero"] for l in self.log.read_text().splitlines()], [["Ah", "Kd"], ["7c", "2d"]])   # 顺序不变
+
+    def test_ops_line_and_summary(self):
+        """ops.log：每个动作一行中文（画面/牌/底池/决策来源/点击/延迟/备注）；每手结束回调一行摘要"""
+        st = {"nums": {"pot": 12, "to_call": 4}}
+        rec = {"t": "18:20:01", "screen": "my_turn", "hero": "Ah Kd", "board": "Qs 7d 2c", "dec": {"act": "加注", "size": "2/3", "why": "顶对强踢脚价值"},
+               "t_llm": 2.5, "llm": {}, "act": "preset 2/3@[1,2]", "lat": 3.1}
+        self.assertEqual(C.ops_line(rec, st), "我的回合 Ah Kd [Qs 7d 2c] 池6BB 需跟2BB | 加注 2/3（模型2.5s）顶对强踢脚价值 -> preset 2/3@[1,2] | 3.1s")
+        r2 = {"t": "18:20:09", "screen": "other", "hero": "", "board": "", "act": "unknown", "note": "画面卡住>20s"}
+        self.assertEqual(C.ops_line(r2, {}), "其他 -> unknown | 画面卡住>20s")
+        self.assertIn("（规则）", C.ops_line(dict(rec, llm={"rule": True}), st))
+        got = []
+        sess = self.P.HandSession(None, "opp", hands_log=self.log, on_summary=got.append, log=lambda m: None)
+        sess.build(self.pre(), S.HandHist()); self.assertEqual(got, [])
+        sess.build(self.pre(hero=("7c", "2d"), stack=209), S.HandHist()); sess.flush()
+        self.assertEqual(len(got), 1); self.assertTrue(got[0].startswith("手牌 #1 我方")); self.assertIn("Ah Kd", got[0])
 
     def test_flatten_for_generic(self):
         req, _ = self.sess.build(self.pre(), S.HandHist())

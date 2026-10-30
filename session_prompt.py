@@ -503,18 +503,19 @@ class HandSession:
     """维护 session 模式的请求。build() 生成本次请求（本手完整记录，单条 user）；commit() 记下模型回复。"""
     def __init__(self, table_dir=None, opp=None, keep_hands=6, hands_log=None, on_hand_end=None, hero_name=None,
                  history=None, population=None, warm=False, votes=3, log=print, store=None, store_write=False, hist_stats=None,
-                 msgs_log=None):
+                 msgs_log=None, on_summary=None):
         """history=该对手此前（跨桌）已结束的手 / hist_stats=其累计统计计数，热启动；population=其他对手的手，对手样本少时作群体参考（冷启动）。
         对手昵称由 see_opp() 从截图识别（多帧投票），识别到/换人后 warm=True 时后台加载该对手跨桌历史，下一手开始生效；
         opp 参数只是初始值（可为 None）。
         每手记录：hands_log=对局流水文件（真机：tables/<桌>/hands.jsonl；回放：logs/<日期>/hands__*.jsonl）；
         msgs_log=模型对话文件（真机：tables/<桌>/msgs.jsonl；按 hid 关联，流水里 msgs 字段记它的路径）。
+        on_summary=每手结束的一行摘要回调（真机写 ops.log）。
         store=对手库 OppDB：有它时历史统计/画像/群体参考按主键查库；store_write=True（仅真机）时每手把计数直接加进库（不读 jsonl）。"""
         self.table_dir, self.opp, self.keep = table_dir, opp, keep_hands
         self.hist_S = hist_stats or (opp_stats(history) if history else None)
         self.prof = None                     # 对手画像 {"profile","ptype","src"}：本桌 <opp>.md 优先，其次对手库里最近一份
         self.store, self.store_write = store, store_write
-        self.msgs_log = msgs_log
+        self.msgs_log, self.on_summary = msgs_log, on_summary
         self.sid = time.strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(2)      # 本次运行的 id；hid = sid-手序号
         self.pop = opp_stats(population) if population else (store.pop(opp) if store and warm else None)
         self.warm, self.need_votes, self.log = warm, votes, log
@@ -711,6 +712,9 @@ class HandSession:
                 + f" | {how}，我方 {'?' if delta is None else ('+' if delta > 0 else '') + bb(delta)}BB")
         if delta is not None and abs(delta) > 400: line += "（变化过大，可能有补码或漏观察的手）"
         self.recent.append(line)
+        if self.on_summary:
+            try: self.on_summary(line)
+            except Exception: pass
         rec = {"hid": f"{self.sid}-{self.n_hands:04d}", "t": time.strftime("%Y-%m-%d %H:%M:%S"), "n": self.n_hands, "opp": self.opp, "pos": c["pos"], "hero": c["hero"],
                "board": c["board"], "ev": ev, "how": how, "delta": delta, "start": dict(c.get("start") or {}), "msgs": self.msgs}
         self.hands.append(rec)
@@ -825,6 +829,7 @@ class ProfileUpdater:
                 p.write_text(md + "\n")
                 if self.store is not None: self.store.sync_profiles([p])     # 画像进库，下一手开始生效
         except Exception as e:
-            print(f"[profile] 更新失败: {type(e).__name__}: {str(e)[:80]}", flush=True)
+            import logroll
+            logroll.logger("session").error("[profile] 更新 %s 画像失败: %s: %s", opp, type(e).__name__, str(e)[:120], exc_info=True)
         finally:
             self.busy = False

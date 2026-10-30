@@ -24,7 +24,7 @@ description: 德州扑克（无限注 NLH）职业牌手助手 + WePoker 真机�
 | `tables/<table_id>/` | **每张桌一个目录**：`table.md` 桌信息（session prompt 读前言 bullet：平台/级别/单位/Hero 昵称）、`hands.jsonl` **本桌对局流水**（只追加，每手一行 `session_prompt.hand_detail`：`hid`=`<运行开始时间>-<4位随机>-<手序号>`（导入的为 `imp-<来源>-<序号>`）、`t`/`n`/`opp`（未识别为 null，不计入库）/`pos`/`hero`/`board`/`ev` 原始行动线（筹码）/`how`/`delta`/`table`/`start_bb`、`acts` 逐动作（街/谁/位置/类型/投入/本街累计到/动作前底池/剩余，BB）、`msgs`=对话文件路径）、`msgs.jsonl` **本桌模型对话**（每行 `{hid,t,opp,msgs}`，不进 git，与流水按 `hid` 双向关联）、`<opp>.md` **该对手在本桌的画像**（同一人不同桌可不同；`ProfileUpdater` 每 N 手更新，旧版备份 `.md.bak`） | 读写对局数据/查某一手 |
 | `poker_bot.py` | 命令行入口（list / tprobe / tlive）、模型配置读取 `load_providers`、通用 `call_model` | 跑机器人 |
 | `bot_core.py` | 机器人核心：`TPROMPT`、`Bot.handle`（每帧状态机）、`execute` 动作映射、`rule_decide` 本地规则兜底、`Decider`（对冲请求+deadline）、`AnthropicKA` 长连接池、`Grabber` 后台截图、`AdbIO` 常驻 adb shell、`AsyncWriter` | 改策略/流程/延迟 |
-| `tests/test_scenarios.py` | 场景测试（106 例，不连手机不调模型）；场景清单 `tests/SCENARIOS.md`；golden 生成 `tests/make_golden.py` | 改代码后必跑 |
+| `tests/test_scenarios.py` | 场景测试（108 例，不连手机不调模型）；场景清单 `tests/SCENARIOS.md`；golden 生成 `tests/make_golden.py` | 改代码后必跑 |
 | `session_prompt.py` | `--prompt session`：`SYS_STATIC` 开局长 system（牌桌/规则/策略/偏移表 + `_reference()` 参考资料块：gto.md §8.1 单挑统计参考值/§6.2/§2.5/§2.6/§7、technology.md §2.4/§4.1/§4.2，改这些章节会直接改 prompt；prompt caching）+ 每手注入对手画像与最近几手；`HandSession` 每次决策发一条本手完整记录（`手牌 #n`、当前手牌，紧跟未弃牌对手的本局统计画像块，再逐街逐动作 `位置[用户名] 动作，剩余 xBB`、BB 单位快照（翻后含 `SPR`=双方剩余较小者÷有效底池），结尾“现在根据用户行为、画像和相关数据进行决策行动”），本局统计由 `opp_stats()` 从已结束的手算出、`walk()` 算剩余筹码；手结束写结果摘要；`find_profile` 取画像（本桌 `<opp>.md` 优先，其次库里最近一份）；`ProfileUpdater` 每 N 手异步更新本桌 `<opp>.md` | 改 session 模式 prompt/画像接入 |
 | `tools/preflop_rank.json` | 169 种起手牌单挑胜率与排名百分位（`tools/make_preflop_rank.py` 生成），`state.preflop_rank()` 读，状态里显示「起手牌 前X%」 | 翻前范围 |
 | `tools/state.py` | 截图 → 文字状态（常驻 OCR 进程 `_OCRServer` + 模板识牌，parse≈0.2s），含 `facts`/`made_desc`（听牌含去重“合计 N outs”）/`draw_outs`/`draw_eq`/`draw_line`（精确听牌胜率）/`preset_off`/`usable_presets`（灰档识别）/`HandHist`（换街用底池增量校正“下注到 ?”） | 机器人识别问题 |
@@ -34,6 +34,7 @@ description: 德州扑克（无限注 NLH）职业牌手助手 + WePoker 真机�
 | `tools/watch.py` | 后台监视，画面变化时存 raw 截图 | 采集样本 |
 | `tools/replay_hand.py` / `replay_summary.py` / `show_replay.py` | 离线回放、汇总、逐帧打印 | 改 prompt 后对比新旧决策 |
 | `tools/analyze_session.py` | 会话分析：模型错误/超时率、耗时、bb/100 | 复盘一晚的机器人表现 |
+| `tools/model_eval.py` + `tools/model_cases.py` | **模型决策评测**：`model_cases.CASES` 是合成局面（手牌/公共牌/位置/HandHist 行动线/筹码 + 正确动作 `ok`、严重错误 `bad`、可接受档位 `size`；分类 翻前/规则陷阱/翻后价值/听牌赔率/对手画像，画像类只在 session 模式跑，画像与统计在 `PROFILES`），`build()` 按真机规律推出底池/按钮/预设；出题与判分都走生产代码（prompt 与 tlive 一致 → `parse_json` → `execute(RecIO)` → `real_act`），判定 对/尺度偏/错/严重/无效，按类别出正确率；`--model rule` 是本地规则基线（不调模型）；明细写 `logs/<日期>/model_eval__<模型>__<prompt>.jsonl` | 换模型/改 prompt 后量化决策质量 |
 | `adb_act.sh` | 早期 ADB 快捷脚本（固定坐标，部分未验证） | 只在 `tools/act.py` 不可用时 |
 | `logs/` | 系统日志，按天滚动：`logs/<YYYY-MM-DD>/`（`text__<model>.jsonl` 为文本模式主日志（每帧一行 JSON）；`ops.log` 为**人看的实时操作 + 异常日志**（tlive 真机/--dry 写，标准后端格式 `2026-10-30 18:20:01.123 INFO  [MainThread] bot - 消息`，级别 INFO/WARN/ERROR：每个动作一行 INFO“画面 手牌 [公共牌] 池/需跟 | 决策（模型Ns/规则）理由 -> 点击 | 延迟 | 备注”（unknown/兜底/noop 记 WARN），另有启动/结束、对手识别、每手摘要；设备无响应/异常界面 WARN，写盘/库/画像失败与未捕获异常 ERROR + traceback；代码里统一用 `logroll.logger("<模块>")` 打日志，QueueListener 后台线程写、跨零点换文件，`extra={"file_only": True}` 只进文件不上控制台；`tail -f` 看）；另有 `unknown.jsonl`、`act.jsonl`、`replay__*.jsonl`），只保留最近 90 天（`tools/logroll.py`，可用 `EQUIPOISE_LOG_KEEP_DAYS` 调整）；根下 `stack_cache.json` 为分析缓存、`_backup/` 为旧代码备份 | 复盘 |
 | `model_test/` | 截图样本：`live/` 实时帧、`unknown/` 无法处理的界面、`act/` 动作前后对比 | 调试识别/点击 |
@@ -141,7 +142,8 @@ python3 tools/players.py list | show <opp> | hands <opp> [--table X] | hand <hid
 
 1. `python3 tools/analyze_session.py [logs/<YYYY-MM-DD>/text__<model>.jsonl]`（不带参数取最近一天）：错误率、超时率、耗时、bb/100。
 2. 改了 prompt 或识别后：`python3 tools/replay_hand.py <HH:MM:SS> <HH:MM:SS> --model <m>` 重放某手，或 `tlive --replay` 批量回放，再用 `tools/replay_summary.py logs/<YYYY-MM-DD>/replay__<时间>.jsonl` 看新旧决策差异。
-3. 查某一手：`players.py hand <hid>`（逐动作明细 + 当时的模型对话）；回放产生的手需要入库时按工作流 C 用 `players.py import --table` 导入；有摊牌信息时手工补进本桌画像 §5。
+3. 决策质量评测（换模型、改 prompt/`SYS_STATIC`/`brief_text` 前后都跑一遍对比）：`python3 tools/model_eval.py --model <m> --prompt short|session [-n 2]`（30~34 个局面，约 1 分钟；`--model rule` 规则基线；`--cat 翻前`/`--case id1,id2` 只跑部分；`--show <id>` 看发给模型的 prompt；`--list` 列用例）。新增用例写进 `tools/model_cases.py`，只收答案明确的局面，跑一次 `--model rule` 和 `TestModelEval`（检查正确动作在该局面可执行）。复盘发现模型在真实局面犯错时，把那个局面抽象成用例加进去。
+4. 查某一手：`players.py hand <hid>`（逐动作明细 + 当时的模型对话）；回放产生的手需要入库时按工作流 C 用 `players.py import --table` 导入；有摊牌信息时手工补进本桌画像 §5。
 
 ---
 

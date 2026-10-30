@@ -552,6 +552,51 @@ class TestRules(unittest.TestCase):
 
 
 # ---------------------------------------------------------------- 7. 基础设施
+class TestModelEval(unittest.TestCase):
+    """tools/model_eval.py：用例能构造出合法局面、正确答案点得到；判分按实际执行的动作归一化"""
+    @classmethod
+    def setUpClass(cls):
+        import model_eval as E
+        cls.E = E
+
+    def test_cases_consistent(self):
+        E = self.E
+        self.assertEqual(len({c["id"] for c in E.CASES}), len(E.CASES))
+        for c in E.CASES:
+            st, h = E.build(c); n, b = st["nums"], st["buttons"]
+            self.assertEqual(n["pot"], n["pot_prev"] + n["opp_bet"] + n["my_bet"], c["id"])
+            for a in c["ok"] + c["bad"]:
+                legal = {"弃牌": True, "让牌": not n["to_call"], "跟注": bool(n["to_call"]),
+                         "下注": bool(st["board"]) and not n["to_call"], "加注": bool(E.S.usable_presets(st)) and (not st["board"] or bool(n["to_call"])),
+                         "全下": n["my_stack"] > n["to_call"]}[a]
+                self.assertTrue(legal, f"{c['id']}: {a} 在该局面不可执行（to_call={n['to_call']} 按钮={list(b)}）")
+            for m in (c["modes"] or ("short", "session")):
+                pr = E.prompt_for(c, st, h, m)
+                txt = pr if isinstance(pr, str) else pr["messages"][-1]["content"] + pr["system"][1]["text"]
+                self.assertIn(" ".join(c["hero"]), txt)
+                if c["opp"]: self.assertIn(E.PROFILES[c["opp"]]["ptype"].split("：")[0], txt)
+
+    def test_effective_and_grade(self):
+        E = self.E
+        get = lambda i: next(c for c in E.CASES if c["id"] == i)
+        c = get("river_royal_vs_allin"); st, _ = E.build(c)
+        self.assertEqual(list(st["buttons"]), ["弃牌", "All in"])
+        for act in ("跟注", "全下"):                                   # 跟注即全下 -> 记“跟注”
+            self.assertEqual(E.effective(st, {"act": act})[0], "跟注")
+        self.assertEqual(E.grade(c, st, "弃牌", None), "严重")
+        c = get("flop_free_check_air"); st, _ = E.build(c)
+        self.assertEqual(E.effective(st, {"act": "加注", "size": "1/2"})[:2], ("下注", "1/2"))   # 翻后没人下注时“加注”=下注
+        self.assertEqual(E.grade(c, st, "弃牌", None), "严重")             # 能免费让牌却弃牌
+        c = get("flop_air_vs_pot"); st, _ = E.build(c)
+        self.assertEqual(E.effective(st, {"act": "让牌"})[0], "弃牌")       # 面对下注想让牌 -> 实际兜底弃牌
+        c = get("river_nutflush_value"); st, _ = E.build(c)
+        self.assertEqual(E.grade(c, st, "下注", "1/3"), "尺度偏"); self.assertEqual(E.grade(c, st, "下注", "1"), "对")
+        r = E.run_one(get("pre_btn_AA"), "short", lambda p, timeout=0, max_tokens=0: "好的 {\"act\":\"加注\",\"size\":\"3BB\",\"why\":\"x\"}", 5)
+        self.assertEqual((r["verdict"], r["frac"]), ("对", "3BB"))
+        r = E.run_one(get("pre_btn_AA"), "short", lambda p, timeout=0, max_tokens=0: "不知道", 5)
+        self.assertEqual(r["verdict"], "无效")
+
+
 class TestLogroll(unittest.TestCase):
     def test_ops_log_format_levels_uncaught(self):
         """标准日志：时间.毫秒 级别 [线程] 模块 - 消息；INFO->stdout、WARN/ERROR->stderr；file_only 只进文件；

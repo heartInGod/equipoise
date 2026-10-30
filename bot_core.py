@@ -540,7 +540,11 @@ class Bot:
         use_model = self.decider is not None and not (self.preflop_rule and not st["board"])
         if self.sess is not None:
             tb = time.time()
-            req, txt = self.sess.build(st, self.hist)
+            try:
+                req, txt = self.sess.build(st, self.hist)
+            except Exception:                      # session 记录异常不能拖垮主循环：本次用本地规则
+                LOG.error("session 构建 prompt 失败，本次用本地规则", exc_info=True)
+                return rule_decide(st, self.hist), {"rule": True, "sess_err": True}, ""
             t_build = time.time() - tb
             dec, info = self.decider.ask(req, wall0 + self.budget) if use_model else (None, {})
             info["t_build"] = round(t_build, 4)
@@ -619,9 +623,9 @@ class Bot:
             rec["act"] = "dry" if self.dry else execute(st, dec, io)
             self.last_act = (key, now(), dec); self.retries += 1
             self.save_unknown(src, st, f"点击未生效重试 {dec}")
-        elif scr == "my_turn" and ("?" in hero or "?" in board) and (self.q_since is None or t_shot - self.q_since < self.q_wait):
+        elif scr == "my_turn" and ("?" in hero or "?" in board or len(st["board"]) in (1, 2)) and (self.q_since is None or t_shot - self.q_since < self.q_wait):
             if self.q_since is None: self.q_since = t_shot
-            rec["act"] = "wait"; rec["note"] = "牌未识别完整，等下一帧"
+            rec["act"] = "wait"; rec["note"] = "牌未识别完整，等下一帧" if len(st["board"]) not in (1, 2) else "公共牌只有 1~2 张（发牌动画中），等下一帧"
         elif scr == "my_turn":
             self.q_since = None; self.retries = 0
             th = time.time()

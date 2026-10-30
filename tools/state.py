@@ -567,6 +567,7 @@ class HandHist:
     def observe(self, st):
         hero = tuple(st["hero"])
         street = STREETS.get(len(st["board"]), "?")
+        if street == "?": return                  # 公共牌 1~2 张 = 发牌动画中，不记录（否则行动历史里出现 '?' 街）
         full = len(hero) == 2 and "?" not in "".join(hero)
         if full and (hero != self.hero or (street == "翻前" and self.street not in (None, "翻前"))):
             self.reset(hero)

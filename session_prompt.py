@@ -389,6 +389,7 @@ def walk(ev, hero_pos):
     base = {"me": 0, "opp": 0}
     prior, steps, cur = {"翻前": dict(base)}, [], "翻前"
     for s, e in ev:
+        if s not in ORDER: continue               # 异常街名（如动画帧的 '?'）跳过，不中断结算
         if s != cur:
             while cur != s and ORDER.index(cur) < ORDER.index(s):
                 hi = max(c.values())

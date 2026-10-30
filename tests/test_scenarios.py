@@ -192,6 +192,29 @@ class TestMyTurnFlow(unittest.TestCase):
         r = b.handle("x", mk(hero=("?s", "8h")), 102.5)       # 超过 2s 照常决策
         self.assertTrue(r["act"].startswith("让牌"))
 
+    def test_partial_board_waits_and_not_recorded(self):
+        """2026-10-30 22:48 真机：翻牌动画中只有 2 张公共牌就决策，HandHist 记了 '?' 街，下一手结算 walk() 崩溃退出"""
+        m = fixed('{"act":"让牌","size":null,"why":"x"}')
+        b, io = bot(C.Decider(m))
+        self.assertEqual(b.handle("x", mk(board=("8d", "Ah")), 100)["act"], "wait")
+        self.assertEqual(io.taps, [])
+        h = S.HandHist(); h.observe(mk(hero=("8c", "Qh"), nums={"opp_bet": 2, "my_bet": 1}))
+        h.observe(mk(hero=("8c", "Qh"), board=("8d", "Ah")))
+        self.assertTrue(all(s != "?" for s, _ in h.ev)); self.assertEqual(h.street, "翻前")
+
+    def test_session_walk_skips_unknown_street(self):
+        import session_prompt as SP
+        steps, prior, last, _, _ = SP.walk([("翻前", "我方跟注到 2"), ("?", "我方下注到 2"), ("翻牌", "对手让牌")], "BTN")
+        self.assertEqual(last, "翻牌")
+
+    def test_session_build_error_falls_back_to_rule(self):
+        b, io = bot(C.Decider(fixed(OK_CALL)))
+        class Bad:
+            def build(self, st, hist): raise ValueError("boom")
+        b.sess = Bad()
+        r = b.handle("x", mk(buttons={"弃牌": FOLD, "跟注": CALL}, nums={"to_call": 4, "opp_bet": 6}), 100)
+        self.assertTrue(r["dec"]["why"].startswith("规则:"), r)
+
     def test_preset_then_still_my_turn_confirms(self):
         b, io = bot(C.Decider(fixed(OK_RAISE)))
         b.handle("x", mk(presets=BB_PRE), 100)

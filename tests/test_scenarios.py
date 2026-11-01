@@ -1007,11 +1007,21 @@ class TestMultiTable(unittest.TestCase):
         self.assertNotIn("R=", user); self.assertEqual(sess.last_r, 7)                   # R 由代码抽、不给模型看
         self.assertNotIn("UTG[a]", user.split("起始筹码")[1].split("\n")[0])            # 起始筹码只列在局的
         self.assertIn("### CO[c]", req["system"][1]["text"])
+        self.assertNotIn("翻后行动顺序", user)                                          # 只在翻前给
         h2 = S.HandHist(); h2.np, h2.seats = 6, dict(self.SEATS); h2.hero, h2.pos = ("Ah", "Kd"), "BB"
-        sess.build(dict(st, hero=["Ah", "Kd"], board=[]), h2); sess.flush()
+        _, u2 = sess.build(dict(st, hero=["Ah", "Kd"], board=[]), h2); sess.flush()
+        self.assertIn("翻后行动顺序（在局者，含尚未表态的）：", u2)
         rec = sess.hands[-1]
         self.assertEqual((rec["np"], rec["opp"]), (6, None))
         self.assertEqual(sess.opp_S("c")[1], 1)                                          # 本局多人手并入该对手统计
+
+    def test_post_order_line(self):
+        f = self.P.post_order_line
+        self.assertEqual(f("CO", ["SB", "HJ", "BTN"], 6),
+                         "翻后行动顺序（在局者，含尚未表态的）：SB → HJ → 我方CO → BTN；我方对 SB、HJ 有位置，对 BTN 没有位置")
+        self.assertTrue(f("BTN", ["SB", "CO"], 6).endswith("我方最后行动，对所有在局者都有位置"))
+        self.assertTrue(f("SB", ["BTN"], 6).endswith("我方最先行动，对所有在局者都没有位置"))
+        self.assertIsNone(f("CO", [], 6))
 
     def test_mix_pick(self):
         p = C.mix_pick

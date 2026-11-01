@@ -40,6 +40,7 @@ SYS_STATIC = """你是无限注德州扑克职业牌手（2~8 人桌，单挑和
 - 首次入池：只开池加注不平跟（limp），位置越靠前越紧；前面有人平跟：强牌加注孤立，其余能免费就让牌。
 - 面对开局加注：3bet 两极化（价值 + A5s 类阻断诈唬）；冷跟只在有位置、牌可玩性好时，前面已有人跟注时挤压（squeeze）更紧；大盲有赔率优势，防守最宽。
 - 面对 3bet / 4bet：按基线的 4bet / 继续比例，被压制的高张（KJo、AJo 对前位 3bet）弃。
+- 翻前加注尺度：3bet 有位置约为开池的 3 倍、无位置约 4 倍，每多一个已跟注者再加约 1 个开池；4bet 有位置约为对方 3bet/squeeze 的 2.2–2.5 倍、无位置约 2.5–3 倍；翻前面对加注时「可选」档位后括号里是「对方本街注额的倍数」，按倍数对照上面的基线取最接近的档位（宁大勿小），不要按池分数凭感觉选；加注后剩余筹码不到底池时直接全下。多人桌翻前判断有无位置以代码给的「翻后行动顺序」为准。
 - 面对全下或超过 5BB 的大额加注：看代码给的「翻前面对大注 对其范围胜率 vs 所需胜率」；多人在局时实际胜率更低，要留余量。
 翻后：
 - 顶对及以上价值下注/加注约2/3池；≥8 outs 强听牌可半诈唬 1/3~1/2 池。
@@ -637,14 +638,28 @@ def snapshot_bb(st, hist, ctx=None):
         elif k in ("弃牌", "让牌"): opts.append(k)
         elif k in ("下注", "加注"):
             ps = []
+            ob = n.get("opp_bet") or 0
+            xm = (lambda a: f"({a / ob:.1f}倍)" if a else "") if not board and tc and ob > 2 else (lambda a: "")   # 翻前面对加注：标对方注的倍数（尺度基线按倍数）
             for p in wpstate.usable_presets(st):
                 a = float(p["amt"]) if p.get("amt") else None
                 if p["frac"].endswith("BB"): ps.append(p["frac"] if a is None or abs(a / 2 - float(p["frac"][:-2])) < .01 else f"{p['frac']}={bb(a)}BB")
-                else: ps.append(f"{p['frac']}池" + (f"={bb(a)}BB" if a is not None else ""))
+                else: ps.append(f"{p['frac']}池" + (f"={bb(a)}BB{xm(a)}" if a is not None else ""))
             opts.append(f"{k}[{'加注到 ' if tc and ps else ''}{'、'.join(ps)}]" if ps else k)
+    if ctx.get("order"): L.append(ctx["order"])
     if ctx.get("behind"): L.append(f"身后未行动 {'、'.join(ctx['behind'])}（我方动作后他们还会行动，可能加注）")
     L.append("可选 " + " / ".join(opts))
     return L
+
+
+def post_order_line(pos, opp_pos, np_):
+    """多人桌：在局者（未弃牌，含尚未表态的）的翻后行动顺序 + 我方对谁有位置（代码给出，模型不用自己推）"""
+    live = set(opp_pos)
+    seq = [p for p in T.post_order(np_) if p == pos or p in live]
+    if pos not in seq or len(seq) < 2: return None
+    i = seq.index(pos); before, after = seq[:i], seq[i + 1:]
+    rel = ("我方最后行动，对所有在局者都有位置" if not after else "我方最先行动，对所有在局者都没有位置" if not before
+           else f"我方对 {'、'.join(before)} 有位置，对 {'、'.join(after)} 没有位置")
+    return f"翻后行动顺序（在局者，含尚未表态的）：{' → '.join('我方' + p if p == pos else p for p in seq)}；{rel}"
 
 
 class HandSession:
@@ -998,7 +1013,7 @@ class HandSession:
         mine = (n.get("my_stack") or 0) + (n.get("my_bet") or 0)
         others = [(stacks.get(pos_of[k]) or 0) + cc.get(k, 0) for k in opps if stacks.get(pos_of[k]) is not None]
         behind = T.to_act(w, pos, np_, street)
-        ctx = {"multi": True, "k": len(opps) or 1, "behind": behind,
+        ctx = {"multi": True, "k": len(opps) or 1, "behind": behind, "order": post_order_line(pos, [pos_of[k] for k in opps], np_) if street == "翻前" else None,   # 翻后行动线本身已显示顺序；翻后再写易诱导偷池
                "base": T.hero_baseline(w, np_, pos) if street == "翻前" else None,
                "x": rg[last]["x"] if street == "翻前" and last in rg else None,
                "eff": min(mine, max(others)) if others and n.get("my_stack") is not None else None}

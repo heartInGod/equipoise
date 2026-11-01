@@ -244,6 +244,14 @@ def _ptxt(pr):
     return pr if isinstance(pr, str) else pr["messages"][-1]["content"]     # session 只存 user（system 很长且固定）
 
 
+def load_set(name):
+    """--set：default=model_cases.CASES；pluribus=tools/cases_pluribus.json（make_pluribus_cases.py 生成，参考答案=Pluribus 实际动作）"""
+    global CASES
+    if name == "pluribus":
+        CASES = json.loads((ROOT / "tools" / "cases_pluribus.json").read_text())
+    return CASES
+
+
 def select(a):
     cs = [c for c in CASES if not c["modes"] or a.prompt in c["modes"]]
     if a.cat: cs = [c for c in cs if c["cat"] in a.cat.split(",")]
@@ -251,7 +259,7 @@ def select(a):
     return cs
 
 
-def summary(res):
+def summary(res, plb=False):
     by = defaultdict(Counter)
     for r in res: by[r["cat"]][r["verdict"]] += 1; by["合计"][r["verdict"]] += 1
     w = max(len(k) for k in by) + 2
@@ -269,6 +277,11 @@ def summary(res):
               + "".join(f"\n  {r['id']}: R={r['r']} mix={r['dec'].get('mix')} 模型={r['dec']['act_model']} -> 执行={r['dec']['act']}" for r in ov))
     nomix = sum(1 for r in res if r.get("nomix"))
     if nomix: print(f"mix 缺失或解析不了 {nomix} 次")
+    if plb:
+        n = len(res); cnt = Counter(r["verdict"] for r in res)
+        print(f"\n[Pluribus 集] 吻合率（与 Pluribus 实际动作一致）{cnt['对'] / n * 100:.1f}%  严重错误率 {cnt['严重'] / n * 100:.1f}%  无效 {cnt['无效']}")
+        print("注：Pluribus 是混合策略，吻合率只做模型间横向比较，不是绝对正确率；逐例见明细 jsonl")
+        return
     bad = [r for r in res if r["verdict"] != "对"]
     if bad:
         print("\n不正确的：")
@@ -302,7 +315,10 @@ def main():
     ap.add_argument("--list", action="store_true"); ap.add_argument("--show")
     ap.add_argument("--explain", action="store_true", help="测试模式输出：逐街范围推演 hero/theory（仅 session；max_tokens 1500）")
     ap.add_argument("--full", action="store_true", help="--show 时连 system 一起打印")
+    ap.add_argument("--set", choices=["default", "pluribus"], default="default", help="用例集：pluribus=Pluribus 6 人桌 1000 例（tools/cases_pluribus.json）")
+    ap.add_argument("--limit", type=int, help="只跑前 N 个用例（按 id 顺序抽样时配合 --seed）")
     a = ap.parse_args()
+    load_set(a.set)
     if a.list:
         for c in CASES: print(f"{c['cat']:<6} {c['id']:<32} 应 {'/'.join(c['ok']):<10} {c['why']}" + (f"（仅 {','.join(c['modes'])}）" if c["modes"] else ""))
         return
@@ -311,18 +327,19 @@ def main():
         print(pr if isinstance(pr, str) else SP.flatten(pr) if a.full else _ptxt(pr))
         return
     cs = select(a)
+    if a.limit: cs = random.Random(0).sample(cs, min(a.limit, len(cs)))
     model = "rule" if a.model == "rule" else C.make_model(a.model)
     jobs = [c for c in cs for _ in range(a.n)]
     if a.explain and a.timeout == 30: a.timeout = 90
     print(f"评测 {len(cs)} 个用例 × {a.n} 次，model={a.model} prompt={a.prompt}{' explain' if a.explain else ''}")
     with ThreadPoolExecutor(max_workers=1 if model == "rule" else a.j) as ex:
         res = list(ex.map(lambda c: run_one(c, a.prompt, model, a.timeout, a.explain), jobs))
-    out = logroll.path(f"model_eval__{a.model.replace('/', '__')}__{a.prompt}{'_explain' if a.explain else ''}.jsonl")
+    out = logroll.path(f"model_eval__{a.model.replace('/', '__')}__{a.prompt}{'_explain' if a.explain else ''}{'__plb' if a.set == 'pluribus' else ''}.jsonl")
     with open(out, "a", encoding="utf-8") as f:
         ts = time.strftime("%Y-%m-%d %H:%M:%S")
         for r in res: f.write(json.dumps(dict(r, t=ts, model=a.model, mode=a.prompt, explain=a.explain), ensure_ascii=False) + "\n")
     if a.explain: dump_explain(res)
-    summary(res)
+    summary(res, plb=a.set == "pluribus")
     print(f"\n明细：{out.relative_to(ROOT)}")
 
 

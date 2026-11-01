@@ -329,7 +329,7 @@ class TestExecute(unittest.TestCase):
 
 # ---------------------------------------------------------------- 5. 延迟 / 模型异常（时间按 1/10 缩放：0.1s = 实际 1s）
 K = 0.1
-HEDGE, BUDGET = 3.0 * K, 8.0 * K     # 与 Decider / --hedge 默认值一致
+HEDGE, BUDGET = 3.0 * K, 8.0 * K     # 对冲机制用 3.0 测（默认 --hedge 4.5，见 test_default_hedge）
 LIMIT = 12 * K          # 截图开始 -> 动作发出 的硬上限
 
 
@@ -346,7 +346,7 @@ class TestLatency(unittest.TestCase):
         r, dt = self.run_bot(fixed(OK_CALL, 2.5 * K)); self.assertEqual(r["llm"]["n_req"], 1); self.assertLess(dt, 3 * K)
 
     def test_default_hedge(self):
-        self.assertEqual(C.Decider(None).hedge_after, 3.0)
+        self.assertEqual(C.Decider(None).hedge_after, 4.5)
 
     def test_preflop_rule_skips_model(self):
         raw = fixed(OK_RAISE, 0)
@@ -355,6 +355,39 @@ class TestLatency(unittest.TestCase):
         self.assertEqual(raw.calls, [], "翻前不应调用模型"); self.assertTrue(r["llm"].get("rule")); self.assertEqual(len(io.taps), 1)
         r = b.handle("x", mk(board=("Ac", "7s", "2d"), buttons={"弃牌": FOLD, "让牌": CHECK, "加注": RAISE}), 110, wall0=time.time())
         self.assertEqual(len(raw.calls), 1, "翻后照常问模型")
+
+    def test_trash_fold_skips_model(self):
+        """翻前无人入池的明确垃圾牌直接弃；同花/对子/有人加注/我方大盲/翻后 照常问模型"""
+        raw = fixed(OK_CALL, 0)
+        b, io = bot(C.Decider(raw, hedge_after=HEDGE), budget=BUDGET, trash_fold=True)
+        pre = dict(buttons={"弃牌": FOLD, "跟注": CALL, "加注": RAISE}, nums={"to_call": 1, "opp_bet": 2, "my_bet": 1})
+        r = b.handle("x", mk(hero=("7h", "2c"), **pre), 100, wall0=time.time())       # 单挑 BTN 72o（前94% > 80+25 封顶 90）
+        self.assertEqual(raw.calls, []); self.assertTrue(r["llm"].get("trash")); self.assertEqual(tuple(io.taps[-1]), tuple(FOLD))
+        self.assertIn("垃圾牌直接弃 72o", r["dec"]["why"])
+        for i, h in enumerate([("Th", "2c"), ("6h", "2h"), ("7h", "7c")]):                # T2o 前78% 在 90 以内 / 同花 / 对子
+            b.handle("x", mk(hero=h, **pre), 200 + 10 * i, wall0=time.time())
+            self.assertEqual(len(raw.calls), i + 1, h)
+        b.handle("x", mk(hero=("7h", "2c"), buttons=pre["buttons"], nums={"to_call": 5, "opp_bet": 6, "my_bet": 1}), 300, wall0=time.time())
+        self.assertEqual(len(raw.calls), 4, "面对加注要问模型")
+        b.handle("x", mk(hero=("8h", "3c"), dealer=(720, 900), buttons=pre["buttons"], nums={"to_call": 0, "opp_bet": 2, "my_bet": 2}), 400, wall0=time.time())
+        self.assertEqual(len(raw.calls), 5, "大盲不走垃圾牌规则")
+        b.handle("x", mk(hero=("7h", "2c"), board=("Ac", "7s", "2d"), buttons={"弃牌": FOLD, "跟注": CALL, "加注": RAISE}, nums={"to_call": 4, "opp_bet": 4, "my_bet": 0}), 500, wall0=time.time())
+        self.assertEqual(len(raw.calls), 6, "翻后照常问模型")
+
+    def test_trash_fold_multi(self):
+        """多人桌按位置开池基线：5 人桌 HJ（基线 21%+25）J4o 前66% 弃；BTN（基线 45%+25）J4o 问模型；前面有人平跟不走规则"""
+        import table as T
+        h = S.HandHist(); h.np, h.pos, h.street, h.level = 5, "HJ", "翻前", 1
+        st = mk(hero=("Jh", "4c"), buttons={"弃牌": FOLD, "跟注": CALL, "加注": RAISE}, nums={"to_call": 2, "opp_bet": 2, "my_bet": 0})
+        self.assertEqual(T.rfi("HJ", 5), 21)
+        self.assertEqual(C.trash_fold_dec(st, h)["act"], "弃牌")
+        h.pos = "BTN"; self.assertIsNone(C.trash_fold_dec(st, h))
+        h.pos, h.ev = "CO", [("翻前", "HJ 弃牌")]
+        st["hero"] = ["Jh", "3c"]; self.assertEqual(C.trash_fold_dec(st, h)["act"], "弃牌")   # J3o 前约70% > 28+25
+        h.ev = [("翻前", "HJ 平跟(limp)")]; self.assertIsNone(C.trash_fold_dec(st, h))
+        h.pos, h.ev = "SB", []; st["nums"].update(to_call=1, my_bet=1)
+        st["hero"] = ["Th", "2c"]; self.assertEqual(C.trash_fold_dec(st, h)["act"], "弃牌")   # SB 基线 40%+25=65 < 78
+        st["hero"] = ["Th", "5c"]; self.assertIsNone(C.trash_fold_dec(st, h))                # T5o 前65% 不弃
 
     def test_slow_6s_hedge_wins(self):
         raw = seq_model((6 * K, OK_CALL), (1.5 * K, OK_CALL))

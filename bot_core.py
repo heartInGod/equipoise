@@ -311,7 +311,7 @@ def make_model(ref):
 
 class Decider:
     """对冲请求 + 硬 deadline。raw(prompt, timeout) -> 文本。ask() 返回 (dec 或 None, info)。"""
-    def __init__(self, raw, hedge_after=3.0, max_hedge=1):
+    def __init__(self, raw, hedge_after=4.5, max_hedge=1):
         self.raw, self.hedge_after, self.max_hedge = raw, hedge_after, max_hedge
 
     def ask(self, prompt, deadline):
@@ -463,6 +463,28 @@ def rule_decide(st, hist=None):
     return chk_fold(f"牌力不足 需{need:.0f}%")
 
 
+TRASH_MARGIN = 25          # 垃圾牌直接弃：排名在开池基线 + 25 个百分点之外（留出按画像偷盲的空间）
+
+
+def trash_fold_dec(st, hist):
+    """翻前无人入池（我方之前只有弃牌）、我方不在大盲、位置已知、起手牌非同花非对子且排名 > min(开池基线+25, 90)%：
+    直接弃牌，不问模型（任何画像下都不会开池的牌）。同花牌按胜率排名会被低估（54s 前 83%），一律交给模型。"""
+    import table as T
+    if st["board"] or hist is None or hist.street != "翻前" or hist.level != 1: return None
+    pos, n = hist.pos, hist.np
+    if pos is None or pos == "BB" or "弃牌" not in st["buttons"] or "让牌" in st["buttons"]: return None
+    nm = st.get("nums") or {}
+    if (nm.get("opp_bet") or 0) > 2: return None
+    if any(not e.startswith("我方") and not e.endswith("弃牌") for s, e in hist.ev if s == "翻前"): return None   # 有人平跟/加注
+    h = st["hero"]
+    if len(h) != 2 or h[0][-1] == h[1][-1] or h[0][:-1] == h[1][:-1]: return None
+    pr = wpstate.preflop_rank(h)
+    if not pr: return None
+    cut = min(T.rfi(pos, n) + TRASH_MARGIN, 90)
+    if pr[1]["top"] <= cut: return None
+    return {"act": "弃牌", "size": None, "why": f"规则:垃圾牌直接弃 {pr[0]} 前{pr[1]['top']:.0f}% > {pos}开池基线{T.rfi(pos, n)}%+{TRASH_MARGIN}"}
+
+
 # ======================= 执行 =======================
 def fallback(st, io):
     b = st["buttons"]
@@ -558,9 +580,10 @@ class Bot:
     """handle(src, st, t_shot, wall0) 处理一帧并返回日志记录。
     t_shot = 帧时间（真机=截图开始的 wall time；回放=文件名时间）；wall0 = 该帧开始处理/截图的 wall time（算 deadline 用）。"""
     def __init__(self, io, decider=None, writer=None, log_path=None, live_dir=None, unk_dir=None, unk_log=None,
-                 dry=False, stuck=25, budget=8.0, q_wait=2.0, replay=False, prompt="short", session=None, preflop_rule=False, seat_model=None):
+                 dry=False, stuck=25, budget=8.0, q_wait=2.0, replay=False, prompt="short", session=None, preflop_rule=False, seat_model=None, trash_fold=False):
         self.io, self.decider, self.writer, self.log_path = io, decider, writer, log_path
         self.preflop_rule = preflop_rule  # True：翻前不问模型，直接本地规则（省一次模型往返）
+        self.trash_fold = trash_fold      # True：翻前无人入池的明确垃圾牌直接弃（trash_fold_dec）
         self.live_dir, self.unk_dir, self.unk_log = live_dir, unk_dir, unk_log
         self.dry, self.stuck, self.budget, self.q_wait, self.replay = dry, stuck, budget, q_wait, replay
         self.sess = session              # session_prompt.HandSession（--prompt session）
@@ -613,9 +636,13 @@ class Bot:
                 LOG.error("session 构建 prompt 失败，本次用本地规则", exc_info=True)
                 return rule_decide(st, self.hist), {"rule": True, "sess_err": True}, ""
             t_build = time.time() - tb
+            tf = trash_fold_dec(st, self.hist) if use_model and self.trash_fold else None
+            if tf: use_model = False
             dec, info = self.decider.ask(req, wall0 + self.budget) if use_model else (None, {})
             info["t_build"] = round(t_build, 4)
-            if dec is None:
+            if tf:
+                dec = tf; info.update(rule=True, trash=True)
+            elif dec is None:
                 dec = rule_decide(st, self.hist); info["rule"] = True
             else:                                  # 混合策略：代码按 mix + 随机数 R 选最终动作
                 d2 = apply_mix(dec, getattr(self.sess, "last_r", None), (st.get("nums") or {}).get("to_call"))
@@ -626,7 +653,9 @@ class Bot:
         tb = time.time()
         txt = self.state_fn(st, self.hist)
         info = {"t_build": round(time.time() - tb, 4)}
-        dec = None
+        dec = trash_fold_dec(st, self.hist) if use_model and self.trash_fold else None
+        if dec:
+            info.update(rule=True, trash=True); return dec, info, txt
         if use_model:
             dec, info = self.decider.ask(self.prompt.format(state=txt), wall0 + self.budget)
         if dec is None:
@@ -827,7 +856,7 @@ def run_live(a):
     model = make_model(a.model)
     bot = Bot(io, Decider(model, hedge_after=a.hedge), w, logroll.DailyPath(f"text__{a.model.replace('/', '__')}.jsonl"), live, unk,
               logroll.DailyPath("unknown.jsonl"), dry=a.dry, stuck=a.stuck, budget=a.budget, prompt=a.prompt,
-              session=make_session(a, model, live=not a.dry, log=say), preflop_rule=getattr(a, "preflop_rule", True),
+              session=make_session(a, model, live=not a.dry, log=say), preflop_rule=getattr(a, "preflop_rule", False), trash_fold=getattr(a, "trash_fold", False),
               seat_model=a.model if getattr(a, "seat_check", True) else None)
     t0, min_t = time.time(), 0.0
     while time.time() - t0 < a.max_sec:
@@ -858,7 +887,7 @@ def run_replay(a):
     io, w = RecIO(), AsyncWriter()
     decider = None if getattr(a, "rule", False) else Decider(make_model(a.model), hedge_after=a.hedge)
     bot = Bot(io, decider, w, logroll.path(f"replay__{time.strftime('%m%d_%H%M')}.jsonl"), replay=True, stuck=1e9, budget=a.budget, prompt=a.prompt,
-              session=make_session(a), preflop_rule=getattr(a, "preflop_rule", True))
+              session=make_session(a), preflop_rule=getattr(a, "preflop_rule", False), trash_fold=getattr(a, "trash_fold", False))
     for fp in frames:
         hh = fp.name[:6]
         clock = int(hh[:2]) * 3600 + int(hh[2:4]) * 60 + int(hh[4:6])

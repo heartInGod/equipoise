@@ -35,7 +35,8 @@
 | 25 | 要让牌但只能跟注 | 不自动跟注 → 弃牌 | test_check_never_becomes_call |
 | **模型延迟 / 异常**（时间 1/10 缩放，硬上限 12s） ||||
 | 26 | 模型 3s 正常 | 单请求 | TestLatency.test_fast_3s |
-| 27 | 模型 6s：对冲请求更快 / 不更快 | 3.8s 发第二个请求，先到先用 | test_slow_6s_hedge_wins / _no_faster_hedge |
+| 27 | 模型 6s：对冲请求更快 / 不更快 | 超过 --hedge（默认 4.5s，测试用 3s）发第二个请求，先到先用 | test_slow_6s_hedge_wins / _no_faster_hedge |
+| 27b | 翻前无人入池、我方非大盲的明确垃圾牌（非同花非对子、排名在开池基线+25% 之外，单挑封顶 90%） | 不问模型直接弃；同花/对子/有人平跟或加注/大盲/翻后照常问模型；多人桌按位置基线 | test_trash_fold_skips_model / test_trash_fold_multi |
 | 28 | 模型 9s / 15s / 挂死 | 截图后 8s 本地规则出手 | test_slow_9s_deadline_rule / test_hang_15s / test_real_scale_hang（真实时间） |
 | 29 | SSL 握手超时等报错 | 立刻发对冲请求 | test_error_then_hedge_immediately |
 | 30 | 两个请求都报错 / 非 JSON / 非法 act | 立刻本地规则 | test_both_error_rule_fast / test_bad_json / test_illegal_act |

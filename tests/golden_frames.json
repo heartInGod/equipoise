@@ -2077,8 +2077,8 @@
 "buttons": [],
 "presets": [],
 "pot": 5,
-"to_call": 22,
-"my_stack": null,
+"to_call": 1,
+"my_stack": 229,
 "opp_stack": 598,
 "dealer": "me"
 },
@@ -2090,7 +2090,7 @@
 "presets": [],
 "pot": null,
 "to_call": 0,
-"my_stack": null,
+"my_stack": 182,
 "opp_stack": 650,
 "dealer": "me"
 },

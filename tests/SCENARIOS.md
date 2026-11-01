@@ -46,11 +46,13 @@
 | **基础设施** ||||
 | 34 | 截图线程：拿到更新的帧；环形覆盖不影响已归档帧（hardlink） | | TestInfra |
 | 35 | 日志异步写入不阻塞 | 200 行 <50ms | test_async_writer |
-| 36 | 识别回归（132 帧真实截图）+ parse <0.6s | | TestGoldenFrames |
+| 36 | 识别回归（132 帧真实截图，含多人回放 replay1/2）+ parse <0.6s | | TestGoldenFrames |
 | 37 | ops.log 标准日志格式 / 级别 / 未捕获异常 | | TestLogroll |
 | 38 | 模型评测用例自洽（正确动作可执行、prompt 含手牌/画像）、判分归一化（跟注即全下、翻后“加注”=下注、面对下注“让牌”=兜底弃牌）；session prompt 的输出格式（真机 `OUT_LIVE` 含 range / `--explain` 的 `OUT_EXPLAIN` 含 hero、theory）与「对手范围推演」步骤 | 模型真实正确率与推理质量用 `tools/model_eval.py [--explain]` 另跑（调模型） | TestModelEval |
 | 39 | 多人桌（2~8 人）：位置表/翻后顺序/开池基线随人数和位置变化、`walk_full` 在局与隐式弃牌、身后未行动（含被加注后要再表态的人）、对手翻前范围表（开局/冷跟封顶/squeeze/统计收缩）、多人统计口径（按位置开池含隐式弃牌、面对开局 3B/跟注，盈亏不归属）、流水 np/seats、对手库按座位展开、session 多人 prompt（多画像/范围表/R 不进 prompt/本局多人手并入统计）、`mix_parse`/`apply_mix`（分数档位、频率和≠100、能免费看牌不弃）、`Bot.decide` 按 mix+R 覆盖 act 并写入会话历史、评测 `grade_mix` | | TestMultiTable |
+| 40 | 多人桌真机识别（h49 回放 8 座 5 人 40 帧）：筹码图标不读成数字、座位归座（昵称/筹码/下注/弃牌/标签）、底池差消解下注歧义、D 标误检不归座、D→位置与盲注反推 D、布局推断与布局外锚点、每帧 observe 与只在我方回合 observe+mine 两种节奏还原同一行动线、“下注 ?”由后续帧修正、公共牌变少结束本手、session 多人 prompt、模型座位校验（mock） | | TestMultiSeats |
 
 ## 尚未覆盖（需要真机）
+- 多人桌轮到我方时的真机画面（按钮、预设、我方筹码位置）；6 座/9 座布局。
 - 截图提速（设备端裁剪 / 压缩）与常驻 `adb shell` 点击：手机连上后先跑 `AdbIO()._probe()` 和截图计时。
 - 网络断线、手机掉线重连（Grabber 会每 1s 重试，未实测）。

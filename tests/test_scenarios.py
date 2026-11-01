@@ -1203,6 +1203,156 @@ class TestOppDB(unittest.TestCase):
         db.close()
 
 
+class TestMultiSeats(unittest.TestCase):
+    """多人桌真机识别：h49 回放（WePoker 8 人桌坐 5 人，第 49 手）40 帧 OCR fixture -> 座位解析 / 位置 / 行动线还原"""
+    FX = None
+    EV = [("翻前", "HJ 平跟(limp)"), ("翻前", "CO 弃牌"), ("翻前", "BTN 弃牌"), ("翻前", "我方加注到 8（开局加注(2bet)）"),
+          ("翻前", "BB 弃牌"), ("翻前", "HJ 跟注"), ("翻牌", "我方下注 12"), ("翻牌", "HJ 跟注"),
+          ("转牌", "我方下注 28"), ("转牌", "HJ 加注到 77"), ("转牌", "我方弃牌")]
+
+    @classmethod
+    def setUpClass(cls):
+        import seats
+        cls.SE = seats
+        cls.FX = {f["f"][:3]: f for f in json.loads((ROOT / "tests/fixtures/h49.json").read_text())}
+
+    def st(self, k, turn=False, nobet=False, edit=None):
+        f = self.FX[k]
+        s = S.from_toks(f["toks"], f["board"], f["hero"], f["rects"], f["dealer"])
+        for sl in s["table"]["slots"]:
+            if nobet and sl["hero"]: sl["bet"] = None          # 轮到我方时我方本街还没下注（fixture 里是下注后的帧）
+            if edit and sl["i"] in edit: sl.update(edit[sl["i"]])
+        if turn: s["screen"] = "my_turn"; s["buttons"]["弃牌"] = FOLD
+        return s
+
+    def test_bet_icon(self):
+        bc = self.SE.bet_cands
+        self.assertEqual(bc({"t": "②12", "c": .3}), [12])
+        self.assertEqual(bc({"t": "◎2"}), [2])
+        self.assertEqual(bc({"t": "22", "c": 1.0}), [22, 2])
+        self.assertEqual(bc({"t": "277", "c": .3}), [77, 277])
+        self.assertEqual(bc({"t": "5"}), [5])
+        sl = [{"bet": 28, "bet_c": [28]}, {"bet": 277, "bet_c": [277, 77]}]
+        self.SE.resolve_bets(sl, 147, 42)                  # 147-42 = 28 + 77
+        self.assertEqual(sl[1]["bet"], 77)
+
+    def test_read_table(self):
+        tb = self.st("s20")["table"]
+        occ = {s["i"]: s for s in tb["slots"] if s["occ"]}
+        self.assertEqual(sorted(occ), [0, 3, 4, 6, 7])
+        self.assertEqual((tb["dealer_slot"], tb["pot"], tb["pot_prev"]), (7, 147, 42))
+        self.assertEqual((occ[4]["bet"], occ[4]["stack"], occ[4]["label"]), (77, 503, "加注"))
+        self.assertEqual((occ[0]["bet"], occ[0]["stack"]), (28, 182))
+        self.assertTrue(occ[3]["folded"] and occ[6]["folded"] and occ[7]["folded"])
+        self.assertEqual(self.st("s06")["table"]["slots"][4]["bet"], 2)        # OCR "22"：底池 5 = 1+2+2
+        self.assertIsNone(self.st("s01")["table"]["dealer_slot"])             # D 标误检到底部栏 -> 不归座
+        n = self.st("s21", turn=True)["nums"]
+        self.assertEqual((n["pot"], n["my_bet"], n["opp_bet"], n["to_call"], n["my_stack"]), (147, 28, 77, 49, 182))
+
+    def test_positions(self):
+        tb = self.st("s04")["table"]
+        self.assertEqual(self.SE.positions_of(tb, 7), {0: "SB", 3: "BB", 4: "HJ", 6: "CO", 7: "BTN"})
+        self.assertEqual(self.SE.dealer_from_blinds(tb), 7)                   # SB(下注 1) 的上一家
+        tb2 = {"occ": [0, 4], "slots": [{"i": 0, "occ": True, "bet": 1}, {"i": 4, "occ": True, "bet": 2}]}
+        self.assertEqual(self.SE.positions_of(tb2, 0), {4: "BB", 0: "BTN"})
+        self.assertEqual(self.SE.dealer_from_blinds(tb2), 0)
+
+    def test_derive_layout(self):
+        lay = self.SE.derive([f["toks"] for f in self.FX.values()])
+        ref = self.SE.load_layout()["slots"]
+        self.assertEqual(len(lay["slots"]), 8)
+        for (x, y), (a, b) in zip(lay["slots"], ref): self.assertLess(abs(x - a) + abs(y - b), 30)
+        self.assertTrue(all(self.SE.fits(self.SE.load_layout(), f["toks"])[0] for f in self.FX.values()))
+        self.assertFalse(self.SE.fits(self.SE.load_layout(), [{"t": "某人", "x": 430, "y": 1100, "h": 45}, {"t": "300", "x": 430, "y": 1385, "h": 45}])[0])
+
+    def test_replay_every_frame(self):
+        h = S.HandHist()
+        for k in sorted(self.FX): h.observe(self.st(k))
+        self.assertEqual(h.ev, self.EV)
+        self.assertEqual((h.pos, h.np), ("SB", 5))
+        self.assertEqual(h.seats, {"BB": "蛋挞7块钱", "HJ": "AAA批发aa", "CO": "ZUOZYOUN", "BTN": "亚洲赌怪AG"})
+        self.assertFalse(h.done)                                              # 本录像公共牌没变少
+        s = self.st("s21"); s["board"] = s["board"][:3]; h.observe(s)        # 公共牌变少 = 本手结束
+        self.assertTrue(h.done); self.assertEqual(h.ev, self.EV)
+        self.assertIn("本手我方位置: SB（5人桌）", h.text())
+
+    def test_replay_my_turn_only(self):
+        """真机节奏：只在轮到我方时 observe（其余帧在 Bot 里也会 observe，这里故意跳过大部分），我方动作由 mine 记"""
+        import table as T
+        h = S.HandHist()
+        h.observe(self.st("s04"))
+        s = self.st("s10", turn=True); h.observe(s)
+        self.assertEqual(h.ev, self.EV[:3])
+        self.assertEqual(s["nums"]["stacks"], {"BB": 515, "HJ": 598, "CO": 1000, "BTN": 999})
+        self.assertEqual(s["nums"]["to_call"], 1)
+        h.mine({"act": "加注"}, "preset 4BB=8", s)
+        h.observe(self.st("s10", turn=True))                                  # 点击后仍是同一画面 -> 撤销
+        self.assertEqual(h.ev, self.EV[:3])
+        h.mine({"act": "加注"}, "preset 4BB=8", s)
+        s = self.st("s16", turn=True, nobet=True); h.observe(s); h.mine({"act": "下注"}, "preset 1/2=12", s)
+        s = self.st("s19", turn=True, nobet=True); h.observe(s); h.mine({"act": "下注"}, "preset 2/3=28", s)
+        s = self.st("s21", turn=True); h.observe(s); h.mine({"act": "弃牌"}, "fold", s)
+        self.assertEqual(h.ev, self.EV)
+        w = T.walk_full(h.ev, h.pos, h.np)
+        self.assertEqual({k: sum(v.values()) for k, v in w["prior"].items()}, {"翻前": 0, "翻牌": 18, "转牌": 42})
+
+    def test_check_label_and_fix_amount(self):
+        h = S.HandHist()
+        for k in ("s04", "s06", "s08", "s10", "s11", "s13"): h.observe(self.st(k))
+        h.observe(self.st("s16", nobet=True, edit={0: {"label": "让牌"}}))
+        h.observe(self.st("s16", nobet=True, edit={4: {"label": "让牌"}}))
+        self.assertEqual(h.ev[-3:], [("翻前", "HJ 跟注"), ("翻牌", "我方让牌"), ("翻牌", "HJ 让牌")])
+        s = self.st("s19", turn=True, nobet=True); h.observe(s)
+        self.assertEqual(h.ev[-1], ("翻牌", "HJ 让牌"))                        # 换街没有多记
+        h.mine({"act": "下注"}, "下注", s)                                      # 预设额没读到 -> "下注 ?"
+        self.assertEqual(h.ev[-1], ("转牌", "我方下注 ?"))
+        h.observe(self.st("s19"))                                             # 帧里我方下注 28 -> 修正
+        self.assertEqual(h.ev[-1], ("转牌", "我方下注 28"))
+
+    def test_session_prompt(self):
+        import session_prompt as SP
+        h = S.HandHist()
+        for k in ("s04", "s06", "s08"): h.observe(self.st(k))
+        s = self.st("s10", turn=True); h.observe(s)
+        sess = SP.HandSession(); sess.fixed_r = 5
+        _, u = sess.build(s, h)
+        self.assertIn("5人桌，我方 SB[乌贼69]；未弃牌对手 HJ[AAA批发aa]、BB[蛋挞7块钱]", u)
+        self.assertIn("HJ[AAA批发aa] 平跟(limp) 1BB，剩余 299BB -> CO[ZUOZYOUN] 弃牌 -> BTN[亚洲赌怪AG] 弃牌 -> 轮到 SB[乌贼69](我方)", u)
+        self.assertIn("需跟注 0.5BB", u)
+        self.assertIn("起始筹码 HJ[AAA批发aa] 300BB / SB[乌贼69] 115BB / BB[蛋挞7块钱] 258.5BB", u)
+
+    def test_model_check(self):
+        cmp = self.SE.compare
+        tb = self.st("s20")["table"]
+        names = {0: "乌贼69", 3: "蛋挞7块钱", 4: "AAA批发aa", 6: "ZUOZYOUN", 7: "亚洲赌怪AG"}
+        seats = [{"name": "你好骚啊"}, {"empty": True}, {"empty": True}, {"name": "蛋挞7块钱"}, {"name": "AAA批发aa"},
+                 {"empty": True}, {"name": "ZUOZYOUN"}, {"name": "亚洲赌怪AG", "dealer": True}]
+        self.assertEqual(cmp(tb, {"seats": seats}, names), [])
+        bad = [dict(x) for x in seats]; bad[7]["dealer"] = False; bad[6]["dealer"] = True; bad[4]["name"] = "BBB批发bb"
+        self.assertEqual(len(cmp(tb, {"seats": bad}, names)), 2)
+        self.assertEqual(cmp(tb, {"seats": seats[:7]}, names), ["座位数 代码8 模型7"])
+        self.assertTrue(self.SE._same("你好骚啊", "你好强啊") and not self.SE._same("ab", "ac"))
+        # Guard：后台线程调（mock）模型，一致不报警；入座集合不变不重复问
+        orig, self.SE.to_jpg_b64 = self.SE.to_jpg_b64, (lambda src, width=720: "")
+        try:
+            calls, bads = [], []
+            def mk_call():
+                def call(req, timeout=40, max_tokens=900):
+                    calls.append(req); return json.dumps({"seats": bad})
+                return call
+            g = self.SE.Guard(mk_call, save=False)
+            st = self.st("s20")
+            self.assertTrue(g.maybe("x.raw", st, names, on_bad=bads.append))
+            for _ in range(200):
+                if not g.busy: break
+                time.sleep(0.01)
+            self.assertEqual(len(calls), 1); self.assertEqual(len(bads), 1)
+            self.assertIn("image", json.dumps(calls[0]["messages"][0]["content"][0]))
+            self.assertFalse(g.maybe("x.raw", st, names))
+        finally:
+            self.SE.to_jpg_b64 = orig
+
+
 class FakeCapIO:
     def __init__(self, period): self.period, self.n = period, 0
     def capture(self, path):

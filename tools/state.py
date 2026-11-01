@@ -6,6 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pix
+import seats
 
 TOOLS = Path(__file__).resolve().parent
 OCR = str(TOOLS / "ocr")
@@ -211,6 +212,13 @@ def parse(src):
     t_cards = time.time() - t0
     try: toks = json.loads(got() or "[]")
     except Exception: toks = []
+    st = from_toks(toks, board, hero, rects, find_dealer(im, toks), im)
+    st["ms"] = int((time.time() - t0) * 1000); st["ms_cards"] = int(t_cards * 1000)
+    return st
+
+
+def from_toks(toks, board, hero, rects=(), dealer=None, im=None):
+    """OCR 结果 + 读牌结果 -> 状态（parse 的后半段；离线回放/测试可直接喂 OCR token，im=None 时额度预设不判灰）"""
     st = {"board": board, "hero": hero, "buttons": {}, "presets": [], "texts": []}
     for o in toks:
         t, x, y = re.sub(r"^[①-⑳◎◉○●⊙@©®]+\s*", "", o["t"].strip()), o["x"], o["y"]
@@ -239,9 +247,9 @@ def parse(src):
                 if abs(a[1] - sx) < 60 and 2200 < a[2] < 2560 and re.fullmatch(r"[\d./]+", a[0]):
                     if 60 < a[2] - sy < 140 and re.fullmatch(r"\d+(\.\d+)?", a[0]): amt = a[0]
                     used.add(id(a))
-            st["presets"].append({"frac": nm, "amt": amt, "xy": [sx, sy], "off": preset_off(im, sx, sy)})
+            st["presets"].append({"frac": nm, "amt": amt, "xy": [sx, sy], "off": preset_off(im, sx, sy) if im is not None else False})
     st["texts"] = [a for a in tx if id(a) not in used]
-    st["dealer"] = find_dealer(im, toks)
+    st["dealer"] = dealer
     b = st["buttons"]
     st["nums"] = table_nums(st)
     if "直接发牌" not in b: b.pop("发两次", None)   # 桌面信息行"延迟看牌 发两次"是房间设置文字，不是按钮
@@ -264,7 +272,7 @@ def parse(src):
     else:
         st["screen"] = "other"
     st["opp_name"] = opp_name(st) if st["screen"] in ("my_turn", "other", "anim") else None
-    st["ms"] = int((time.time() - t0) * 1000); st["ms_cards"] = int(t_cards * 1000)
+    seats.attach(st, toks, rects)          # 多人桌：按座位布局解析各座位（≥3 人入座时改写 nums 里的下注/需跟）
     return st
 
 
@@ -333,6 +341,7 @@ def table_nums(st):
          "my_bet_ocr": grab(780, 1060, 2520, 2600), "my_stack": grab(600, 840, 3105, 3165)}
     call_btn = b.get("跟注")
     n["to_call"] = grab(call_btn[0] - 90, call_btn[0] + 90, call_btn[1] - 90, call_btn[1] - 15) if call_btn else None
+    n["to_call_btn"] = n["to_call"]          # 跟注按钮上读到的金额（多人桌 seats.attach 用；其余字段是单挑反推）
     if n["to_call"] is None and ("All in" in b or "ALL IN" in b) and "跟注" not in b and "让牌" not in b:
         n["to_call"] = "allin"  # 对手下注≥我方剩余筹码：只能 弃牌 或 All in 跟
     pot, prev = n["pot"], n["pot_prev"] or 0
@@ -543,12 +552,18 @@ class HandHist:
     金额均为“本街累计下注到 X”。新手牌（手牌变化）时重置。"""
     def __init__(self):
         self.np, self.seats = 2, {}       # 桌上人数 / 座位 位置->昵称（多人桌由识别填；reset 不清，换桌才变）
+        self.names = {}                   # 多人桌 槽号->昵称（跨手累计：单帧昵称可能被动作标签盖住）
         self.reset(None)
 
     def reset(self, hero):
         self.hero, self.pos, self.street, self.ev, self.level = hero, None, None, [], 1
         self.my_tot = self.opp_tot = 0; self.last_me = None; self._snap = None
         self.pot0 = None                     # 当前街开始时的底池（换街时用底池增量校正我方下注额）
+        self.slot_pos, self.m, self.done = {}, None, False   # 多人桌：槽号->位置 / 本街状态 / 本手已结束（公共牌变少）
+
+    @property
+    def multi(self):
+        return bool(self.slot_pos) and self.np > 2
 
     _ORDER = ("翻前", "翻牌", "转牌", "河牌")
 
@@ -567,6 +582,7 @@ class HandHist:
             self.ev[i] = (self.street, self.ev[i][1].replace("到 ?", f"到 {delta // 2}", 1)); self.my_tot = delta // 2
 
     def observe(self, st):
+        if (st.get("table") or {}).get("n", 0) >= 3 or self.multi: return self._observe_multi(st)
         hero = tuple(st["hero"])
         street = STREETS.get(len(st["board"]), "?")
         if street == "?": return                  # 公共牌 1~2 张 = 发牌动画中，不记录（否则行动历史里出现 '?' 街）
@@ -614,7 +630,209 @@ class HandHist:
                 self.ev.append((street, f"对手{'加注' if was_bet else '下注'}到 {opp}" + (f"（{LEVEL.get(self.level, f'{self.level}bet')}）" if street == '翻前' else "")))
         self.my_tot, self.opp_tot = my, opp
 
+    # ------------------------------------------------------------ 多人桌（3~8 人）
+    # 每帧（或每到我方回合）调用：按本街行动顺序从上一个行动者往后走，用各座位的下注变化 / “弃牌”状态 / 新出现的
+    # 让牌·跟注·全下 标签判断每人动作；被跳过（后面的人已经有动作、或轮到我方、或已换街）而没有迹象的人：
+    # 本街下注已等于最高注 = 让牌，否则 = 弃牌（换街时仍在局 = 跟注）。事件写 "HJ 跟注" / "我方加注到 8" 等位置前缀。
+    def _who(self, p):
+        return "我方" if p == self.pos else p + " "
+
+    def _new_street(self, street, blinds=None):
+        import table as T
+        fold = self.m["fold"] if self.m else set()
+        allin = self.m["allin"] if self.m else set()
+        if street == "翻前":
+            order = T.positions(self.np)
+            bet = {p: 0 for p in order}
+            bet.update(blinds or {"SB": 1, "BB": 2})
+            last = order.index("BB")
+        else:
+            order = [p for p in T.post_order(self.np)]
+            bet = {p: 0 for p in order}
+            last = -1
+        self.m = {"order": order, "bet": bet, "hi": max(bet.values()), "last": last, "acted": set(), "fold": fold, "allin": allin,
+                  "lab": self.m["lab"] if self.m else {}}
+        self.street, self.level, self.last_me = street, (1 if street == "翻前" else 0), None
+
+    def _complete(self):
+        m = self.m
+        live = [p for p in m["order"] if p not in m["fold"] and p not in m["allin"]]
+        if len([p for p in m["order"] if p not in m["fold"]]) <= 1: return True
+        return all(p in m["acted"] and m["bet"][p] == m["hi"] for p in live)
+
+    def _act(self, p, kind, amt=None):
+        m, st = self.m, self.street
+        w = self._who(p)
+        if kind == "fold": e = f"{w}弃牌"; m["fold"].add(p)
+        elif kind == "check": e = f"{w}让牌"
+        elif kind == "call":
+            e = f"{w}平跟(limp)" if st == "翻前" and self.level == 1 and m["hi"] == 2 else f"{w}跟注"
+            m["bet"][p] = m["hi"]
+        elif kind == "allin":
+            e = f"{w}全下(共 {amt})"
+            if amt > m["hi"]: self.level += 1; m["hi"] = amt
+            m["bet"][p] = amt; m["allin"].add(p)
+        else:                                   # 下注/加注到 amt
+            bet0 = m["hi"] == 0 and st != "翻前"
+            self.level += 1
+            e = f"{w}下注 {amt}" if bet0 else f"{w}加注到 {amt}" + (f"（{LEVEL.get(self.level, f'{self.level}bet')}）" if st == "翻前" else "")
+            m["hi"] = amt; m["bet"][p] = amt
+            m["acted"] = set()                  # 加注后其余人要重新表态
+        m["acted"].add(p)
+        self.ev.append((st, e))
+        if p == self.pos: self.last_me = {"fold": "弃牌", "check": "让牌", "call": "跟注", "allin": "全下"}.get(kind, "加注")
+
+    def _decide(self, p, f, closing, street_over):
+        """p 这次的动作（无迹象且 closing 时按默认规则补）；返回 False = 还不能确定（等后面的帧）"""
+        m = self.m
+        if f.get("folded"): self._act(p, "fold"); return True
+        b = f.get("bet")
+        if b is not None and b > m["bet"][p]:
+            if f.get("stack") == 0 and b >= m["hi"]: self._act(p, "allin", b)
+            elif b > m["hi"]: self._act(p, "raise", b)
+            else: self._act(p, "call")
+            return True
+        lab = f.get("new_label")
+        if lab == "让牌" and m["bet"][p] == m["hi"]: self._act(p, "check"); return True
+        if lab == "跟注" and m["hi"] > m["bet"][p]: self._act(p, "call"); return True
+        if not closing: return False
+        if m["bet"][p] == m["hi"]: self._act(p, "check")
+        elif street_over: self._act(p, "call")
+        else: self._act(p, "fold")
+        return True
+
+    def _walk(self, frame, upto=None, street_over=False):
+        """从上一个行动者往后走。upto=位置（走到它之前停，即轮到它）；street_over=上一街已结束（走完整街）；否则走到最远有迹象的人"""
+        m = self.m
+        order, n = m["order"], len(m["order"])
+        ev_at = lambda p: (frame.get(p, {}).get("folded") and p not in m["fold"]) or \
+            (frame.get(p, {}).get("bet") or 0) > m["bet"][p] or frame.get(p, {}).get("new_label") in ("让牌", "跟注")
+        if street_over: steps = 2 * n
+        elif upto in order:
+            steps = (order.index(upto) - m["last"] - 1) % n        # 走到 upto 的上一家为止
+        else:
+            ks = [k for k in range(1, n + 1) if ev_at(order[(m["last"] + k) % n])]
+            steps = max(ks) if ks else 0
+        for k in range(1, steps + 1):
+            if self._complete(): break
+            i = (m["last"] + 1) % n
+            p = order[i]
+            if p in m["fold"] or p in m["allin"]: m["last"] = i; continue
+            closing = street_over or upto is not None or any(ev_at(order[(i + j) % n]) for j in range(1, n))
+            if not self._decide(p, frame.get(p, {}), closing, street_over): break
+            m["last"] = i
+
+    def _assign(self, tb):
+        import seats as SE
+        d = tb.get("dealer_slot")
+        if d is None and not tb.get("board"): d = SE.dealer_from_blinds(tb)
+        sp = SE.positions_of(tb, d)
+        hero = next((s["i"] for s in tb["slots"] if s["hero"]), None)
+        if not sp or hero not in sp: return False
+        self.slot_pos, self.np, self.pos = sp, len(sp), sp[hero]
+        self.seats = {p: self.names.get(i) for i, p in sp.items() if i != hero}
+        return True
+
+    def _observe_multi(self, st):
+        tb = st.get("table") or {}
+        for s in tb.get("slots") or []:
+            if s["occ"] and s["name"]: self.names[s["i"]] = s["name"]
+        hero = tuple(st["hero"])
+        nb = len(st["board"])
+        street = STREETS.get(nb, "?")
+        full = len(hero) == 2 and "?" not in "".join(hero)
+        if full and hero != self.hero:
+            self.reset(hero)
+        if self.hero is None or self.done: return
+        if street == "?": return
+        if self.street in self._ORDER and self._ORDER.index(street) < self._ORDER.index(self.street):
+            self.done = True; return               # 公共牌变少 = 本手已结束（下一手还没发我方手牌）
+        if not self.slot_pos:
+            if not self._assign(dict(tb, board=st["board"])): return
+        if self.seats and not all(self.seats.values()):
+            hs = next((s["i"] for s in tb["slots"] if s["hero"]), None)
+            self.seats = {p: self.seats.get(p) or self.names.get(i) for i, p in self.slot_pos.items() if i != hs}
+        frame = {}
+        for s in tb.get("slots") or []:
+            p = self.slot_pos.get(s["i"])
+            if p is None: continue
+            lab = s["label"] if s["label"] != (self.m or {}).get("lab", {}).get(p) else None
+            frame[p] = {"folded": s["folded"], "bet": s["bet"], "stack": s["stack"], "new_label": lab, "label": s["label"]}
+        n = st.setdefault("nums", {})
+        n["stacks"] = {p: f["stack"] for p, f in frame.items() if p != self.pos and f["stack"] is not None}
+        n["bets"] = {p: f["bet"] or 0 for p, f in frame.items()}
+        if self.street is None:
+            bl = {p: frame[p]["bet"] for p in ("SB", "BB") if frame.get(p, {}).get("bet")} if street == "翻前" else None
+            self._new_street(street, bl or None)
+        elif street != self.street:
+            # 上一街收尾：新帧里下注已收进底池，只看弃牌状态；仍在局且没跟齐的 = 跟注
+            self._walk({p: {"folded": f["folded"]} for p, f in frame.items()}, street_over=True)
+            self._new_street(street)
+            for p, f in frame.items(): self.m["lab"][p] = f["label"]   # 换街：旧标签不算新动作
+            frame = {p: dict(f, new_label=None) for p, f in frame.items()}
+        if self._fix_failed_mine(st, frame): return
+        if self.last_me in ("加注", "全下") and frame.get(self.pos, {}).get("bet"):
+            self._fix_my_amount(frame[self.pos]["bet"])
+        my_turn = st.get("screen") == "my_turn"
+        self._walk(frame, upto=self.pos if my_turn and self.pos not in self.m["fold"] else None)
+        for p, f in frame.items(): self.m["lab"][p] = f["label"]
+        self.my_tot = self.m["bet"].get(self.pos, 0)
+        self.opp_tot = self.m["hi"]
+
+    def _fix_my_amount(self, b):
+        """我方本街最后一次加注额按帧里实际的下注额修正（mine 记的是预设额，可能差 1~2 或没读到记成 ?）"""
+        m = self.m
+        if m["order"][m["last"]] != self.pos or b == m["bet"].get(self.pos): return
+        for i in range(len(self.ev) - 1, -1, -1):
+            s, e = self.ev[i]
+            if s != self.street: break
+            if e.startswith("我方"):
+                if re.search(r"(到|下注) (\d+|\?)", e):
+                    self.ev[i] = (s, re.sub(r"(到|下注) (\d+|\?)", lambda g: f"{g.group(1)} {b}", e, count=1))
+                    m["bet"][self.pos] = m["hi"] = b              # 我方是本街最后加注者，最高注就是我方的
+                break
+
+    def _fix_failed_mine(self, st, frame):
+        """仍是我方回合、其他人没新动作、我方下注也没变 -> 上次点击没生效，撤销 mine 的记录"""
+        if not isinstance(self._snap, dict): return False
+        sn = self._snap
+        if st.get("screen") not in ("my_turn", "anim") or sn["street"] != self.street:
+            self._snap = None; return False           # 出现过非我方回合的帧 / 已换街 = 上次点击生效了
+        if st.get("screen") != "my_turn": return False
+        me = frame.get(self.pos, {})
+        others = any(p != self.pos and ((f.get("bet") or 0) > sn["m"]["bet"].get(p, 0) or (f.get("folded") and p not in sn["m"]["fold"]))
+                     for p, f in frame.items())
+        if others or me.get("folded") or (me.get("bet") or 0) > sn["m"]["bet"].get(self.pos, 0): self._snap = None; return False
+        import copy
+        del self.ev[sn["k"]:]
+        self.m, self.level, self.last_me = copy.deepcopy(sn["m"]), sn["level"], sn["last_me"]
+        self._snap = None
+        return False
+
+    def _mine_multi(self, dec, act_str, st):
+        import copy
+        self._snap = {"k": len(self.ev), "m": copy.deepcopy(self.m), "level": self.level, "last_me": self.last_me, "street": self.street}
+        a, n, m = dec.get("act"), st.get("nums", {}), self.m
+        if m is None: return
+        mt = re.search(r"preset (\S+?)=(\d+)", str(act_str))
+        if a == "跟注" and "All in" in st["buttons"] and n.get("to_call") and n.get("my_stack") and n["to_call"] >= n["my_stack"]: a = "全下"
+        if a in ("加注", "下注"):
+            tot = int(mt.group(2)) if mt else None
+            if tot: self._act(self.pos, "raise", tot)
+            else:
+                self.level += 1
+                bet0 = m["hi"] == 0 and self.street != "翻前"
+                self.ev.append((self.street, "我方" + ("下注 ?" if bet0 else "加注到 ?")))
+                m["acted"] = {self.pos}; self.last_me = "加注"
+        elif a == "跟注": self._act(self.pos, "call")
+        elif a == "全下": self._act(self.pos, "allin", (n.get("my_stack") or 0) + (n.get("my_bet") or 0))
+        elif a == "让牌": self._act(self.pos, "check")
+        elif a == "弃牌": self._act(self.pos, "fold")
+        else: return
+        m["last"] = m["order"].index(self.pos)
+
     def mine(self, dec, act_str, st):
+        if self.multi: return self._mine_multi(dec, act_str, st)
         self._snap = (len(self.ev), self.level, self.my_tot, self.last_me)
         a = dec.get("act")
         n = st.get("nums", {})
@@ -633,7 +851,8 @@ class HandHist:
 
     def text(self):
         L = []
-        if self.pos: L.append("本手我方位置: " + ("按钮位/小盲" if self.pos == "BTN" else "大盲"))
+        if self.pos and self.multi: L.append(f"本手我方位置: {self.pos}（{self.np}人桌）")
+        elif self.pos: L.append("本手我方位置: " + ("按钮位/小盲" if self.pos == "BTN" else "大盲"))
         cur = None
         for s, e in self.ev:
             if s != cur: L.append(f"  {s}: {e}"); cur = s

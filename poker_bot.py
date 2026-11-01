@@ -253,6 +253,8 @@ if __name__ == "__main__":
     p4.add_argument("--warm", action=argparse.BooleanOptionalAction, default=None,
                     help="session 模式：载入该对手跨桌历史手（热启动）+ 其他对手群体参考（冷启动）。默认真机开、回放关")
     p4.add_argument("--profile-every", type=int, default=10, help="session 真机模式：每 N 手异步更新一次对手画像，0=不更新")
+    p4.add_argument("--seat-check", action=argparse.BooleanOptionalAction, default=True,
+                    help="多人桌：入座变化时后台发截图让模型校验座位分组/D 位（一致记入 tools/layout_8max.json，不一致存截图）；--no-seat-check 关闭")
     p4.add_argument("--stuck", type=float, default=25, help="非我回合画面不变超过N秒视为未知界面并截图")
     p4.add_argument("--capture", choices=["stream", "screencap"], default="stream",
                     help="截图方式：stream=screenrecord 视频流+VideoToolbox 解码(默认，需先编译 tools/vstream；不可用时自动退回 screencap) screencap=每帧 adb screencap(~0.95s/帧)")

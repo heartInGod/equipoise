@@ -558,7 +558,7 @@ class Bot:
     """handle(src, st, t_shot, wall0) 处理一帧并返回日志记录。
     t_shot = 帧时间（真机=截图开始的 wall time；回放=文件名时间）；wall0 = 该帧开始处理/截图的 wall time（算 deadline 用）。"""
     def __init__(self, io, decider=None, writer=None, log_path=None, live_dir=None, unk_dir=None, unk_log=None,
-                 dry=False, stuck=25, budget=8.0, q_wait=2.0, replay=False, prompt="short", session=None, preflop_rule=False):
+                 dry=False, stuck=25, budget=8.0, q_wait=2.0, replay=False, prompt="short", session=None, preflop_rule=False, seat_model=None):
         self.io, self.decider, self.writer, self.log_path = io, decider, writer, log_path
         self.preflop_rule = preflop_rule  # True：翻前不问模型，直接本地规则（省一次模型往返）
         self.live_dir, self.unk_dir, self.unk_log = live_dir, unk_dir, unk_log
@@ -573,6 +573,18 @@ class Bot:
         self.retries = 0                 # 同一画面“点击未生效”重试次数
         self.cards = None                # (hero, board, t)：最近一次读全的牌，滑条展开(画面变暗读不到牌)时沿用
         self.hist = wpstate.HandHist()
+        self.seat_guard = None           # 多人桌开局座位校验（seat_model=模型 ref；入座变化时后台问一次多模态模型）
+        if seat_model:
+            import seats
+            self.seat_guard = seats.Guard(lambda: make_model(seat_model), log=lambda m: LOG.info("%s", m))
+
+    def _seat_check(self, src, st):
+        """多人桌：入座集合变化 / 布局外锚点 -> 复制当前帧，后台让模型校验座位分组和 D 位；不一致记日志并存截图"""
+        if not self.seat_guard or not self.seat_guard.need(st): return
+        import shutil, tempfile
+        fd, cp = tempfile.mkstemp(suffix=Path(src).suffix or ".raw"); os.close(fd)
+        shutil.copyfile(src, cp)
+        self.seat_guard.maybe(cp, st, dict(self.hist.names), on_bad=lambda why: self.save_unknown(cp, st, why))
 
     # ---- 工具 ----
     def _now(self, t_shot, wall0):
@@ -631,7 +643,11 @@ class Bot:
         elif "确定" in b and not st["hero"] and self.cards and t_shot - self.cards[2] < 40:
             st["hero"], st["board"] = list(self.cards[0]), list(self.cards[1])   # 加注滑条展开，整屏变暗，读不到牌
             dim = "滑条展开(画面变暗)，沿用记忆的牌"
-        if self.sess is not None and hasattr(self.sess, "see_opp"):
+        multi = (st.get("table") or {}).get("n", 0) >= 3 or self.hist.multi
+        if multi:                                          # 多人桌：每帧按座位帧差记行动线（单挑只在我方回合 observe）
+            if st["screen"] != "my_turn": self.hist.observe(st)
+            self._seat_check(src, st)
+        elif self.sess is not None and hasattr(self.sess, "see_opp"):
             self.sess.see_opp(st.get("opp_name"))          # 对手昵称投票 + 异步加载跨桌画像（不阻塞本帧）
         n = st.get("nums") or {}
         hero, board = " ".join(st["hero"]), " ".join(st["board"])
@@ -811,7 +827,8 @@ def run_live(a):
     model = make_model(a.model)
     bot = Bot(io, Decider(model, hedge_after=a.hedge), w, logroll.DailyPath(f"text__{a.model.replace('/', '__')}.jsonl"), live, unk,
               logroll.DailyPath("unknown.jsonl"), dry=a.dry, stuck=a.stuck, budget=a.budget, prompt=a.prompt,
-              session=make_session(a, model, live=not a.dry, log=say), preflop_rule=getattr(a, "preflop_rule", True))
+              session=make_session(a, model, live=not a.dry, log=say), preflop_rule=getattr(a, "preflop_rule", True),
+              seat_model=a.model if getattr(a, "seat_check", True) else None)
     t0, min_t = time.time(), 0.0
     while time.time() - t0 < a.max_sec:
         src, t_shot = grab.get(min_t)

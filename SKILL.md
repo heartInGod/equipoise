@@ -28,7 +28,9 @@ description: 德州扑克（无限注 NLH）职业牌手助手 + WePoker 真机�
 | `tests/test_scenarios.py` | 场景测试（108 例，不连手机不调模型）；场景清单 `tests/SCENARIOS.md`；golden 生成 `tests/make_golden.py` | 改代码后必跑 |
 | `session_prompt.py` | `--prompt session`：`SYS_STATIC` 开局长 system（2~8 人通用：牌桌/规则/策略基线（翻前按代码给的位置基线）/多人底池规则/「对手范围推演」步骤（翻前起点=代码范围表 → 翻后逐动作删牌 → 画像校正 → 定位我方）/「抓诈：由你权衡」/「行动线冲突与封顶」（翻牌转牌已封顶 → 河牌提高抓诈和诈唬频率；被动型对手不例外，按偏移后的频率混合；规则只写在 prompt，代码不识别冲突）/「混合策略与随机数 R」/偏移表 + `_reference()` 参考资料块：gto.md §3 无差异与混合策略/§4.1–4.3 范围理论/§5 阻断/§8 统计参考值/§8.1 单挑/§6.2/§2.5/§2.6/§7、technology.md §1/§2.1–2.4/§4.1–4.4/§6.4，改这些章节会直接改 prompt；结尾输出格式 `{output}` = `OUT_LIVE`（真机，`{range,mix,act,size,why}`；mix=动作+频率如“跟注60 弃牌40”“下注1/2 30 让牌70”，act=最高频动作；`HandSession._r()` 每次决策抽随机数 R=0~99（不写进 prompt，存 `last_r`，`fixed_r` 可固定），`bot_core.Bot.decide` 用 `apply_mix` 按 mix 书写顺序累计频率选最终动作并覆盖 act（原值记 `act_model`，info 记 `mix_override`；mix 解析不了按模型 act）；`mix_parse` 的频率取每段最后一个不属于分数的整数）或 `OUT_EXPLAIN`（`HandSession(explain=True)`，评测复盘用）；prompt caching）+ 每手注入对手画像与最近几手；`HandSession` 每次决策发一条本手完整记录（`手牌 #n`、当前手牌，紧跟未弃牌对手的本局统计画像块，再逐街逐动作 `位置[用户名] 动作，剩余 xBB`、BB 单位快照（翻后含 `SPR`=双方剩余较小者÷有效底池），结尾“现在根据用户行为、画像和相关数据进行决策行动”），本局统计由 `opp_stats()` 从已结束的手算出、`walk()` 算剩余筹码；手结束写结果摘要；`find_profile` 取画像（本桌 `<opp>.md` 优先，其次库里最近一份）；`ProfileUpdater` 每 N 手异步更新本桌 `<opp>.md` | 改 session 模式 prompt/画像接入 |
 | `tools/preflop_rank.json` | 169 种起手牌单挑胜率与排名百分位（`tools/make_preflop_rank.py` 生成）+ `vs` 对前 5/10/20/35/50% 范围的胜率（`make_preflop_rank.py --vs` 生成，8 进程约 5 分钟）+ `mw` 对 2~7 个随机对手的胜率（`--mw`，约 3~4 分钟；多人桌快照显示「对k个随机对手胜率」），`state.preflop_rank()` 读，状态里显示「起手牌 前X%」；翻前面对大注（>5BB）时 `state.big_range()` 按加注层级/大小估对手范围（4bet+ 前5%、3bet 前10%、开局大注按 BB 前50%~10%），`vs_big_eq()` 查表给「翻前面对大注 对其范围(约前X%)胜率」，规则与 short/session 三处共用 | 翻前范围 |
-| `tools/state.py` | 截图 → 文字状态（常驻 OCR 进程 `_OCRServer` + 模板识牌，parse≈0.2s），含 `facts`/`made_desc`（听牌含去重“合计 N outs”）/`draw_outs`/`draw_eq`/`draw_line`（精确听牌胜率）/`preset_off`/`usable_presets`（灰档识别）/`HandHist`（换街用底池增量校正“下注到 ?”） | 机器人识别问题 |
+| `tools/state.py` | 截图 → 文字状态（常驻 OCR 进程 `_OCRServer` + 模板识牌，parse≈0.2s），含 `facts`/`made_desc`（听牌含去重“合计 N outs”）/`draw_outs`/`draw_eq`/`draw_line`（精确听牌胜率）/`preset_off`/`usable_presets`（灰档识别）/`HandHist`（换街用底池增量校正“下注到 ?”；入座 ≥3 人时 `_observe_multi` 每帧按帧差还原行动线：本街行动顺序逐人看下注变化/“弃牌”状态/新出现的让牌·跟注标签，被跳过的人按本街下注是否等于最高注补让牌/弃牌，事件带位置前缀，`mine` 金额读不到写“?”再由帧修正）；`parse` = OCR+读牌+`find_dealer` → `from_toks`（可直接喂 OCR 结果回放） | 机器人识别问题 |
+| `tools/seats.py` + `tools/layout_8max.json` | **多人桌座位识别**：`attach` 按布局把 OCR 归座（昵称/筹码/下注/弃牌/动作标签，去掉筹码图标读成的数字），下注歧义用“总底池 − 已收底池 = Σ本街下注”消解，入座 ≥3 人时改写 `nums`（pot/my_stack/my_bet/opp_bet=最高注/to_call（按钮金额优先）/`stacks`）并给 `table`（slots/occ/dealer_slot/pos/misfit）；D 标归座（最近 <300 且 <次近×0.7），读不到 D 按盲注反推；位置=从 D 下一家顺时针 SB、BB、`positions(n)[:-2]`；布局由 `derive` 从多帧锚点聚类+镜像补全推出、存 `layout_8max.json`（没有则用 `DEFAULT`）；`Guard` 后台让模型看图校验座位（分组/空座/D 位，昵称以 OCR 为准、我方昵称不比），入座集合变化或出现布局外锚点时触发，一致写 `verified`、不一致存 unknown 帧 | 多人桌识别/换桌型 |
+| `tests/fixtures/h49.json` | h49 录像（8 座坐 5 人，我方 SB）40 帧的 OCR 结果，`TestMultiSeats` 离线回放用（`seats.py dump` 生成） | 多人识别回归 |
 | `tools/ocr.swift` → `tools/ocr` | macOS Vision OCR；`serve` 常驻模式；改完 `cd tools && swiftc -O ocr.swift -o ocr` | 识别底层 |
 | `tools/vstream.swift` → `tools/vstream` | 视频流截图：拉起 `adb exec-out screenrecord --output-format=h264 -`，VideoToolbox 硬解只留最新帧；stdin 命令 `wait <seq> <ms>` / `snap <path>`（写与 screencap 同格式 .raw）；screenrecord 单段上限 180s（系统写死，不能调大），每 170s 提前起下一段、新段出首帧即无缝切换（`VSTREAM_ROTATE` 环境变量可调小用于测试）；退出/SIGTERM 时关掉子进程，手机不留孤儿录屏；改完 `cd tools && swiftc -O vstream.swift -o vstream`（编译产物不入库） | 截图底层 |
 | `tools/stream.py` | `StreamGrabber`：与 `Grabber` 同接口 `get(min_t)`；帧时间 = now − LAT(0.25s，实测画面变化→解码≤0.22s)；静止时每 0.5s 重复返回同一帧；流不可用时退回单次 screencap。`bot_core.make_grabber(io, capture)` 选择 | tlive 截图方式 |
@@ -125,6 +127,7 @@ tail -f logs/$(date +%F)/ops.log | grep -v --line-buffered " INFO  \["   # 只�
 python3 tests/test_scenarios.py                            # 场景测试（改 bot_core/state 后必跑，SKIP_GOLDEN=1 更快）
 python3 tools/act.py look | fold | check | call | allin | raise 3BB | raise 1/2   # 手动操作
 python3 tools/frameroll.py [--keep-gb 30] [--apply]           # live 帧滚动清理（默认只预览）
+python3 tools/seats.py show <帧.raw> | derive <帧目录> [--save] | dump <帧目录> <out.json> | check <帧.raw> [--model <m>]   # 多人桌：看座位解析 / 从录像推布局写 layout_8max.json / 导出 OCR fixture / 模型校验座位（--model 才调模型）
 python3 tools/players.py list | show <opp> | hands <opp> [--table X] | hand <hid> | import <jsonl> --table <桌> | rebuild   # 全局对手库（SQLite）+ 各桌对局流水
 ```
 
@@ -134,6 +137,7 @@ python3 tools/players.py list | show <opp> | hands <opp> [--table X] | hand <hid
 - 延迟链路：截图（默认 StreamGrabber 视频流，取帧即最新画面；`--capture screencap` 用 Grabber 后台连续 screencap）→ parse(0.2s) → 模型（长连接；3.0s 未返回发对冲请求（`--hedge`，默认 3.0）；截图后 `--budget` 8s 仍无结果用 `rule_decide`）→ 常驻 adb shell 发点击（不阻塞）。点击后开始于 busy_until+0.25s 之前的帧丢弃。
 - 识别出的画面类型：`my_turn`、`anim`、`runit`（全下后选发一次/两次）、`profile`、`away`、`can_start`、`need_sit`、`waiting`、`other`。
 - 无法处理的界面会存到 `model_test/unknown/` 并写入 `logs/<YYYY-MM-DD>/unknown.jsonl`，优化识别时先看这里。
+- 多人桌（入座 ≥3）：每帧（含非我方回合）都 `hist.observe` 还原行动线，跳过单挑的 `see_opp`；tlive 默认 `--seat-check`（`--no-seat-check` 关闭）用决策模型在后台校验座位布局，回放不调用。换了桌型/界面先 `seats.py show` 看归座，锚点落在布局外（`misfit`）就用该桌录像 `seats.py derive --save` 重推布局，再 `check --model` 确认。
 - WePoker 界面事实（2026-10-30 真机实测，详见 `tools/act.py` 文件头）：
   - 点额度预设即直接下注，不用再确认。翻前预设 2/3/4/5/6BB，翻后 1/3、1/2、2/3、1、1.2 池。
   - 没有独立全下按钮：点加注 → 滑条拖到顶 → 点确定。跟对手全下直接点跟注。
@@ -172,7 +176,7 @@ python3 tools/players.py list | show <opp> | hands <opp> [--table X] | hand <hid
 - `adb_act.sh` 的坐标来自早期截图，部分没验证过；`tools/act.py` 每次按 OCR 定位，更可靠。
 - 2026-10-30 修复（commit 见 `git log`）：灰档预设误点（“我方下注到 ?”）、`rule_decide` 危险牌面（四同花/一张成顺/三同花/大公共对）两对·顶对降级、rule_decide 强弱判断只看成牌行（原来听牌行的“顺子听牌”字样会把纯顺听当成顺子强牌）、组合听牌 outs 去重与精确胜率（004552 Td8d@KdQd9h=12 outs 到河 45%）、hedge 3.8→3.0、`--preflop-rule`（默认开）、live 帧滚动清理。真机 100 手复测尚未做（需用户明确要求再跑）。之后（模型评测发现）：翻前面对 4bet 时 A5o 被估“46% 够跟”→ 改为按范围宽度查表；四同花公共牌上只用一张小牌成的同花（`_flush_beaten` ≥2 张更大同花色牌未现）在规则里降为中等牌。真机 22:48 崩溃修复：发牌动画中公共牌只有 1~2 张时 `handle` 等下一帧、`HandHist.observe` 不记录（之前记成 '?' 街，下一手结算时 `walk()` 抛 ValueError 退出）；`walk()` 跳过未知街；`sess.build` 异常只记 ERROR 并退回本地规则，不拖垮主循环。
 - 文档中的范围和统计参考值按 6max 100BB 现金局给出；单挑、锦标赛、短码要另行调整（单挑基线：BTN 开约 80%，BB 防守 50–60%+）。
-- 多人桌（2026-11）：决策/统计/评测已支持 2~8 人（`tools/table.py`，`HandHist.np`/`seats`，流水记 `np`/`seats`），用合成局面测过；**真机识别多人桌（座位、各人筹码 `nums.stacks`、位置前缀行动线）还没做**，需要 3 人以上牌桌截图（阶段 5）。目前 `HandHist.observe` 仍按单挑记录，np 默认 2。已知限制：没有对手摊牌底牌，统计只能校准动作频率；胜率表有约 1% 蒙特卡洛误差。
+- 多人桌（2026-11）：决策/统计/评测已支持 2~8 人（`tools/table.py`，`HandHist.np`/`seats`，流水记 `np`/`seats`），用合成局面测过；真机识别多人桌（阶段 5，`tools/seats.py`）已用 h49 回放录像（8 座 5 人）验证：座位/筹码/下注/D 位/位置前缀行动线逐帧与人工核对一致。**缺口：还没有多人桌“轮到我方”时的真机画面**（h49 是回放界面，我方筹码在 y≈2667，单挑真机在 y≈3135，代码搜索 cy+300..1100 两者都覆盖，但按钮/预设档位/我方筹码位置未经真机验证），其他桌型（6 座/9 座）没有布局。已知限制：没有对手摊牌底牌，统计只能校准动作频率；胜率表有约 1% 蒙特卡洛误差。
 
 ---
 

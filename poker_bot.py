@@ -110,8 +110,8 @@ def call_model(ref, prompt, jpg_bytes, timeout=60, max_tokens=400):
         return "".join(c.get("text", "") for o in d.get("output", []) for c in (o.get("content") or []) if c.get("type") in ("output_text", "text"))
     if proto == "gemini":
         h["x-goog-api-key"] = key
-        body = {"contents": [{"role": "user", "parts": [
-                    {"inline_data": {"mime_type": "image/jpeg", "data": b64}}, {"text": prompt}]}],
+        body = {"contents": [{"role": "user", "parts": ([
+                    {"inline_data": {"mime_type": "image/jpeg", "data": b64}}] if b64 else []) + [{"text": prompt}]}],
                 "generationConfig": {"maxOutputTokens": 2000, "temperature": 0}}
         d = http_post(f"{base}/models/{model}:generateContent", h, body, timeout)
         return "".join(pt.get("text", "") for c in d.get("candidates", []) for pt in c.get("content", {}).get("parts", []))

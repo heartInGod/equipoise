@@ -248,6 +248,7 @@ class AnthropicKA:
         self.H = {"Content-Type": "application/json", **p["headers"], "x-api-key": key, "Authorization": f"Bearer {key}",
                   "anthropic-version": "2023-06-01"}
         self.ctx, self.lock, self.pool, self.warm, self.idle = ssl.create_default_context(), threading.Lock(), [], warm, idle
+        self.think = {"thinking": {"type": "disabled"}}   # opus-5-5 等新模型不支持 disabled，首个 400 后切 adaptive+low
         threading.Thread(target=self._keeper, daemon=True).start()
 
     def _new(self):
@@ -276,14 +277,19 @@ class AnthropicKA:
             req = {"system": prompt["system"], "messages": prompt["messages"]}
         else:
             req = {"messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}]}
-        body = json.dumps({"model": self.model, "max_tokens": max_tokens, "temperature": 0, "thinking": {"type": "disabled"}, **req})
-        for attempt in range(2):
+        mk = lambda: json.dumps({"model": self.model, "temperature": 0, **req, **self.think,
+                                 "max_tokens": max_tokens if "output_config" not in self.think else max(max_tokens, 2000)})
+        body = mk()
+        for attempt in range(3):
             with self.lock: it = self.pool.pop() if self.pool else None
             fresh = it is None
             c = (it or self._new())[0]
             try:
                 c.sock.settimeout(timeout)
                 c.request("POST", self.path, body, self.H); r = c.getresponse(); d = r.read()
+                if r.status == 400 and b"adaptive" in d and '"disabled"' in body:
+                    with self.lock: self.pool.append([c, time.time()])
+                    self.think = {"thinking": {"type": "adaptive"}, "output_config": {"effort": "low"}}; body = mk(); continue
                 if r.status != 200:
                     c.close(); raise RuntimeError(f"HTTP {r.status}: {d[:200].decode(errors='replace')}")
                 with self.lock: self.pool.append([c, time.time()])

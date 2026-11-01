@@ -19,7 +19,7 @@ import state as wpstate
 
 ROOT = Path(__file__).resolve().parent.parent
 DB = ROOT / "players" / "opponents.db"
-VERSION = 3
+VERSION = 4                  # 4：加多人桌口径（按位置开池、多人 3bet/4bet/5bet、领打、河牌下注/加注）
 
 # player_rates 视图：列名 -> (分子, 分母)
 RATES = (
@@ -28,6 +28,10 @@ RATES = (
     ("fold_to_3b", "f3_fold", "f3_opp"), ("fold_to_4b", "f4_fold", "f4_opp"), ("iso_vs_limp", "iso", "vs_limp"),
     ("cbet_flop", "cb", "cb_opp"), ("cbet_turn", "cb2", "cb2_opp"), ("fold_to_cbet", "fcb", "fcb_opp"),
     ("raise_cbet", "rcb", "fcb_opp"), ("check_raise", "xr", "xr_opp"), ("wtsd", "wtsd", "flop"), ("wsd", "wsd", "wtsd"),
+    ("rfi_ep", "rfi_ep", "rfi_ep_opp"), ("rfi_hj", "rfi_hj", "rfi_hj_opp"), ("rfi_co", "rfi_co", "rfi_co_opp"),
+    ("rfi_btn", "rfi_bt", "rfi_bt_opp"), ("rfi_sb", "rfi_sb", "rfi_sb_opp"), ("mw_3b", "m3", "m3_opp"), ("mw_call_open", "mc", "m3_opp"),
+    ("mw_fold_to_3b", "mf3", "mf3_opp"), ("mw_4b", "m4", "m4_opp"), ("mw_5b", "m5", "m5_opp"),
+    ("donk", "ld", "ld_opp"), ("river_bet", "rv", "rv_opp"), ("river_raise", "rr", "rr_opp"),
 )
 
 
@@ -107,7 +111,10 @@ PRAGMA user_version = {VERSION};""")
         """把一批手（记录：opp/pos/ev/board/how/delta/t）的计数加到各对手那一行（一条 UPSERT，不读旧值）；没有 opp 的跳过。返回手数"""
         P, groups = _P(), {}
         for h in hands:
-            if h.get("opp"): groups.setdefault(wpstate.name_key(h["opp"]), []).append(h)
+            if (h.get("np") or 2) > 2:                  # 多人桌：每个入座对手各算一份（opp_pos=他的位置）
+                for pos, name in (h.get("seats") or {}).items():
+                    if name and pos != h.get("pos"): groups.setdefault(wpstate.name_key(name), []).append(dict(h, opp=name, opp_pos=pos))
+            elif h.get("opp"): groups.setdefault(wpstate.name_key(h["opp"]), []).append(h)
         if not groups: return 0
         cols = ("key", "name", "first_seen", "last_seen") + self.keys
         sql = (f"INSERT INTO players({','.join(cols)}) VALUES({','.join('?' * len(cols))}) ON CONFLICT(key) DO UPDATE SET "

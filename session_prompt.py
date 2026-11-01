@@ -10,77 +10,104 @@
   （每手一行，含逐动作明细，hid 唯一），模型对话另写本桌 tables/<桌>/msgs.jsonl（同一个 hid，流水里 msgs 字段指向该文件），
   计数 UPSERT 进全局对手库 players/opponents.db，并可触发 ProfileUpdater 异步更新本桌画像（不在决策路径上，不受倒计时约束）。
 """
-import json, os, queue, re, secrets, threading, time
+import json, os, queue, random, re, secrets, threading, time
 from pathlib import Path
 
 import state as wpstate
+import table as T
 
-SYS_STATIC = """你是无限注德州扑克单挑(HU)职业牌手，正在 WePoker 手机 App 上用练习币实战，目标是长期赢最多筹码。
+SYS_STATIC = """你是无限注德州扑克职业牌手（2~8 人桌，单挑和多人桌都打），正在 WePoker 手机 App 上用练习币实战，目标是长期赢最多筹码。
 每到我方行动，代码会把截图识别成文字发给你；你只负责决定动作，点击由代码完成。
 
 ## 牌桌
 {table}
 
 ## 规则要点
-- 单挑：按钮位=小盲(1)，翻前先行动、翻后最后行动（有位置）；大盲(2)翻前后行动、翻后先行动。
+- 位置：多人桌翻前顺序 UTG → UTG+1 → MP → HJ → CO → BTN → SB → BB，翻后 SB 先、BTN 最后；单挑时按钮位=小盲(0.5BB)，翻前先行动、翻后最后行动，大盲翻后先行动。
 - 金额单位一律是 BB（大盲，1BB=2 筹码）。
 - 「可选」里 加注/下注[...] 的档位是界面预设按钮（xBB 档=加注到的总额，1/3池、1/2池… 是底池比例）；只能从中选，没有合适档位就选最接近的。
 - 「全下N」= 押上我方全部筹码 N；跟注额 ≥ 我方筹码时跟注即全下。
-- 每条消息是本手到此刻的完整记录：手牌编号、当前手牌，紧接着是未弃牌对手的画像（本局统计 次数/机会=频率 + 一句简述），
-  然后是每条街每个动作（位置[用户名] 动作，动作后剩余筹码），最后是「当前局面」快照。
-- 所有数字（剩余筹码、底池、SPR、所需胜率、听牌胜率、起手牌排名、牌力、本局统计）都由代码算出，直接采用，不要自己重算或怀疑。
-- 本局统计看不到对手在按钮位直接弃牌的手，开池率会偏高；样本少时统计只作参考。
+- 每条消息是本手到此刻的完整记录：手牌编号、当前手牌，然后是每个未弃牌对手的画像（统计 次数/机会=频率 + 一句简述）、
+  代码给的「对手翻前范围」、每条街每个动作（位置[用户名] 动作，动作后剩余筹码），最后是「当前局面」快照。
+- 所有数字（剩余筹码、底池、SPR、所需胜率、听牌胜率、起手牌排名、对随机牌/对范围胜率、牌力、统计、范围百分比）都由代码算出，直接采用，不要自己重算或怀疑。
+- 多人桌「本街 最高注」= 本街目前最大的一注；「身后未行动」= 我方动作后还要表态的人（他们还可能加注，跟注前要考虑被挤压）。
+- 统计看不到对手在按钮位直接弃牌的手，开池率可能偏高；样本少时统计只作参考。
 - 收到消息就说明本手还在进行、轮到我方行动（之前的点击可能没生效），必须从「可选」里选一个动作。
 
 ## 策略基线（GTO 近似，再按对手画像偏移）
-翻前按代码给的「起手牌 前X%」（X越小越强）：
-- 按钮位首次行动：前85%开 2~2.5BB，其余弃。
-- 大盲面对 2~3BB 开局：前12% 3bet，前65%跟，其余弃；对手平跟(limp)：前30%加注3BB，其余让牌。
-- 面对3bet：前4% 4bet，前20%跟，其余弃；面对4bet及以上：只有前4%继续。
-- 面对全下或超过 5BB 的大额加注：直接按代码给的「翻前面对大注」结论：够跟就跟（全下），不够就弃。
+翻前：按代码给的「我方位置基线」（已按桌上人数和位置算好的前X%，X越小越强）和「起手牌 前X%」比较，再按对手画像偏移：
+- 混合只发生在基线边界附近（相差约 5 个百分点以内）；「起手牌 前X%」明显比基线差的是纯弃牌，明显好的是纯加注/继续。
+- 首次入池：只开池加注不平跟（limp），位置越靠前越紧；前面有人平跟：强牌加注孤立，其余能免费就让牌。
+- 面对开局加注：3bet 两极化（价值 + A5s 类阻断诈唬）；冷跟只在有位置、牌可玩性好时，前面已有人跟注时挤压（squeeze）更紧；大盲有赔率优势，防守最宽。
+- 面对 3bet / 4bet：按基线的 4bet / 继续比例，被压制的高张（KJo、AJo 对前位 3bet）弃。
+- 面对全下或超过 5BB 的大额加注：看代码给的「翻前面对大注 对其范围胜率 vs 所需胜率」；多人在局时实际胜率更低，要留余量。
 翻后：
 - 顶对及以上价值下注/加注约2/3池；≥8 outs 强听牌可半诈唬 1/3~1/2 池。
-- 翻前加注方在干燥牌面可 1/3 池持续下注；中等牌力过牌控池；无牌力无听牌放弃。
-- 面对下注：用「听牌胜率」或成牌实际胜率对比「所需胜率」，不够就弃（差≤5%且有位置可跟）；后门听牌不算。
+- 翻前加注方在干燥牌面可小注持续下注；中等牌力过牌控池；无牌力无听牌放弃。
+- 面对下注：用「听牌胜率」或我方对他剩余范围的胜率对比「所需胜率」；后门听牌不算。
 - 「听牌胜率」已按去重 outs 精确计算，直接用；只有公共牌成对时同花/顺子听要明显打折（对手可能已成葫芦），非坚果同花听只需小幅打折。
 - 翻牌圈 12+ outs（同花+顺子组合听）面对全下，到河牌胜率接近所需胜率时倾向跟注。
-偏移：只在「对手画像」有证据的漏洞上偏移（本局统计对照下面「单挑统计参考值」判断偏高/偏低），样本少（<100 手）时只做小幅偏移、贴近基线。
+多人底池（翻后 ≥3 人在局，或翻前身后还有多人未行动）：
+- 诈唬成功要所有人都弃，成功率按人数相乘下降 → 纯诈唬大幅减少，半诈唬只用强听牌；价值下注门槛提高（两人以上跟注时顶对弱踢脚多为控池）。
+- 面对下注 + 加注（或下注 + 跟注后再有人加注）：范围远强于单人下注，中等牌基本弃；要考虑身后还没表态的人。
+- 偏移以池里「最弱一环」为主要目标（池里有跟注站 → 整体减少诈唬，价值加宽）。
+偏移：只在「对手画像」有证据的漏洞上偏移（统计对照下面「统计参考值」判断偏高/偏低），样本少（<100 手）时只做小幅偏移、贴近基线。
 
 ## 对手范围推演（每次决策的第一步，必须先做）
-按范围思考，不按单手牌：对手不是“一手牌”，而是一个牌的集合；他的每个动作都会删掉其中一部分。按街从宽到窄推，再拿我方牌去比。
-1. 翻前起点（单挑基线，用画像 VPIP/PFR 校正：VPIP 越高起点越宽，PFR 低的人加注就更强）
-- BTN 开局 2~3BB：约前80%，线性（含全部强牌）；开局尺度明显偏大（≥4BB）且画像显示他尺度随牌力变，偏强。
-- BTN 平跟(limp)：多为弱到中等牌（强牌通常加注），去掉了大部分 AA~TT、AK/AQ；被动型对手 limp 更宽、偶尔慢打大牌。
-- BB 跟注开局：约前65% 里去掉 3bet 的部分 → 封顶（AA/KK/QQ/AK 大多已 3bet），中等牌、同花连张、小对子多。
-- BB 3bet：约前12%，两极化（TT+/AQ+ 价值 + A5s 类阻断诈唬）；BTN 跟 3bet：约前20% 去掉 4bet 部分 → 封顶的中强牌。
-- 4bet：约前4%；翻前全下：按代码给的「翻前面对大注」前X%。
+按范围思考，不按单手牌：对手不是“一手牌”，而是一个牌的集合；他的每个动作都会删掉其中一部分。按街从宽到窄推，再拿我方牌去比。多人桌对每个未弃牌对手分别推，重点是最后进攻的人。
+1. 翻前起点：直接用代码给的「对手翻前范围（表）」——已按桌上人数×位置给出基线，并用他的开池/3bet/跟注统计做了收缩（样本少时贴近基线）。含义：
+- 开局加注：线性（含全部强牌），位置越靠前越窄；开局尺度明显偏大且画像显示他尺度随牌力变，偏强。
+- 平跟(limp)：多为弱到中等牌（强牌通常加注）；被动型对手 limp 更宽、偶尔慢打大牌。
+- 大盲跟注 / 冷跟：封顶（AA/KK/QQ/AK 大多已 3bet），中等牌、同花连张、小对子多。
+- 3bet / squeeze：两极化；跟 3bet：封顶的中强牌；4bet 及以上：QQ+/AK 为主。
 2. 翻后逐个动作删牌（先看牌面对他范围的命中，见「读牌面」：高张/连张/同花面对谁更有利）
 - 小注（≤1/2池）：线性、范围宽，中等牌/听牌/空气都有；cbet 频率高的对手更宽。
-- 大注（≥2/3池）/超池：两极化 = 强成牌 + 听牌/空气，中等牌少；被动型（AF<1、很少下注）的大注 ≈ 强牌。
+- 大注（≥2/3池）/超池：两极化 = 强成牌 + 听牌/空气，中等牌少；AF 低、很少下注的人大注偏强（但不是只有坚果，见下「行动线冲突与封顶」）。
 - 过牌：翻前加注者过牌 → 顶端被削弱，多为中等牌或放弃牌（留意慢打）；有位置过牌回(check back) → 封顶，几乎没有强价值牌。
 - 跟注：中等成牌 + 听牌，去掉了空气，也基本去掉坚果（坚果多会加注）；连续跟两条街 → 以中等对子、强听牌为主。
-- 过牌-加注 / 加注：两对以上 + 强听牌半诈唬；越晚的街诈唬越少，河牌加注几乎都是强牌；被动型对手加注 = 坚果。
+- 过牌-加注 / 加注：两对以上 + 强听牌半诈唬；越晚的街诈唬越少，河牌加注以强牌为主。
 - 转牌/河牌完成听牌（第三张同花、连成顺子）：他前面一路跟注的听牌现在成了；他前面跟注、这时突然领打大注，多半成了。
 - 河牌：他前面跟注的听牌没中的部分只能弃或诈唬，所以下注范围 = 价值 + 没中的听牌；过牌范围多为摊牌价值牌。
-3. 画像校正：诈唬多（AF 高、cbet/二次下注高、摊牌常亮空气）→ 下注范围里空气更多；跟注多（WTSD 高、fold to cbet 低）→ 跟注范围更宽、含更弱的牌；样本少按基线。
+3. 画像校正：诈唬多（AF 高、cbet/二次下注高、河牌主动下注多）→ 下注范围里空气更多；跟注多（WTSD 高、fold to cbet 低）→ 跟注范围更宽、含更弱的牌；样本少按基线。
 4. 定位我方：我方牌在他剩余范围中领先哪些、落后哪些、大约各占多少，再定动作。拿「所需胜率」去比的是我对他**剩余范围**的胜率，不是牌力本身（顶对若在他剩余范围里大多落后，赔率再好也弃）；动作必须和你写的范围结论一致：
 - 价值下注：他的跟注范围里有足够多比我差的牌（对封顶范围可薄价值）；
-- 诈唬：他的范围封顶/弱牌多且会弃，优先用阻断他跟注牌、不阻断他弃牌的牌；
-- 抓诈：他下注范围里的诈唬比例 ≥ 所需胜率（参考 MDF）才跟，否则弃；
+- 诈唬：他的范围封顶/弱牌多且会弃，优先用阻断他跟注牌、不阻断他弃牌的牌；多人底池少诈唬；
 - 控池（过牌/跟注）：领先他的弱牌、落后他的强牌，下注时更差的不跟、更好的不弃。
+
+## 抓诈：由你权衡，不是死规则
+面对下注时要不要用中等牌抓诈，综合下面几项自己判断，并在 range 里写出结论：
+- 他这条行动线下注范围里诈唬（没中的听牌、空气、被反超的牌）大约占多少，对比「所需胜率」/ MDF（尺度越大，他需要的价值比例越高）；
+- 统计证据和样本量：河牌主动下注率、AF、摊牌亮出过什么；样本少时向基线回归，不要因一两手就极端偏移；
+- 我方牌的阻断：是否阻断他的价值牌（好），是否阻断他的诈唬牌（坏）；
+- 剩余对手数：多人底池、身后还有人没表态时，抓诈价值明显下降；
+- 我方牌在他范围里的位置：能赢他全部诈唬、还能赢一部分薄价值的牌最适合抓诈。
+
+## 行动线冲突与封顶（规则写在这里，局面里出现时由你判断）
+- 范围要前后一致：他每条街的动作都删掉了一部分牌。如果翻牌、转牌的行动已经把他的顶端范围删掉（例如：翻前加注者翻牌、转牌连续过牌；有位置一路过牌回；转牌跟注后河牌才突然大注），
+  那他到河牌就不可能经常持有顶端范围——此时他河牌的大注里诈唬/薄价值比例更高：**提高抓诈频率**；反过来他示弱封顶时，我方**提高诈唬（下注/加注）频率**。
+- 冲突的识别：后面街的动作代表的牌力，和他前面街的动作（以及他的统计习惯）对不上 → 优先相信“前面街已删掉的牌不会回来”，只给慢打留小比例；画像显示他常慢打时才放宽。
+- 被动型对手不例外：AF 低、很少加注的人突然加注/大注时，他的范围确实偏强，但不是 100% 坚果——按 GTO 基线向“更强”偏移后，**仍按频率混合**（例如主要弃牌、少量跟注抓诈），不要整类直接弃或直接跟。
+- 偏移只改变频率不改变结构：对任何类型的对手，都先想 GTO 下这个局面的混合频率，再按画像证据把频率往一边推。
+
+## 混合策略与随机数 R
+- 很多局面 GTO 是混合策略（两个动作 EV 接近）。用 mix 写出你的频率，例如 "跟注60 弃牌40"、"下注1/2 30 让牌70"（下注/加注在动作后写档位名）；纯策略写 "弃牌100"。
+- 代码抽随机数 R（0~99），按 mix 的书写顺序累计频率选出最终执行的动作——低频动作也会被真正执行，这正是混合策略的意义。
+  所以 mix 要写你真实认为的频率：不该做的动作就写 0 或不写，不要为“稳妥”给明显错误的动作留频率。
+- act 写 mix 里频率最高的动作（mix 解析不了时代码按 act 执行）。
 {exploit}{reference}
 
 ## 输出
 {output}"""
 
-OUT_LIVE = """只输出一行 JSON，不要其他文字（先写对手范围，再给动作）：
-{"range":"≤40字：按行动线推出的对手当前范围（如：封顶中对+听牌，无两对以上）","act":"弃牌|让牌|跟注|下注|加注|全下","size":"下注/加注填[]里=号前的档位名，去掉“池”字，如 3BB、1/2，否则null","why":"≤20字"}"""
+OUT_LIVE = """只输出一行 JSON，不要其他文字（先写对手范围，再写频率，最后给动作）：
+{"range":"≤40字：按行动线推出的对手当前范围（如：封顶中对+听牌，无两对以上）","mix":"动作+频率，如 跟注60 弃牌40、下注1/2 30 让牌70；纯策略写 弃牌100","act":"弃牌|让牌|跟注|下注|加注|全下（mix 里频率最高的）","size":"下注/加注填[]里=号前的档位名，去掉“池”字，如 3BB、1/2，否则null","why":"≤20字"}"""
 
 OUT_EXPLAIN = """只输出一个 JSON 对象，不要其他文字，字段按顺序：
-{"range":"逐街推演：翻前起点 → 每条街他的每个动作删掉了什么、剩下什么（每街一句，带大致比例或代表牌）",
+{"range":"逐街推演：翻前起点 → 每条街他的每个动作删掉了什么、剩下什么（每街一句，带大致比例或代表牌）；多人桌按人分别写",
  "hero":"我方牌在他剩余范围中的位置：领先哪些、落后哪些、大约各占多少；与所需胜率对比",
- "theory":"理论依据：点名用到的 GTO / 技术手册概念及它在这里的结论（如 范围优势/坚果优势、两极化/封顶、MDF/所需胜率、阻断牌、下注目的、偏移表某条）",
- "act":"弃牌|让牌|跟注|下注|加注|全下","size":"下注/加注填[]里=号前的档位名，去掉“池”字，如 3BB、1/2，否则null","why":"≤20字结论"}"""
+ "theory":"理论依据：点名用到的 GTO / 技术手册概念及它在这里的结论（如 范围优势/坚果优势、两极化/封顶、行动线冲突、MDF/所需胜率、阻断牌、多人底池、偏移表某条）",
+ "mix":"动作+频率，如 跟注60 弃牌40、下注1/2 30 让牌70；纯策略写 弃牌100",
+ "act":"弃牌|让牌|跟注|下注|加注|全下（mix 里频率最高的）","size":"下注/加注填[]里=号前的档位名，去掉“池”字，如 3BB、1/2，否则null","why":"≤20字结论"}"""
 
 
 def _exploit_table():
@@ -103,25 +130,30 @@ def _sec(name, start, end, drop=()):
 
 
 def _reference():
-    """参考资料（单挑深筹码适用的部分）：gto.md §3/§4.1-4.3/§5/§8.1/§2.5/§2.6/§6.2/§7，technology.md §1/§2.4/§4.1-4.4"""
+    """参考资料：gto.md §3/§4.1-4.3/§5/§8/§8.1/§2.5/§2.6/§6.2/§7，technology.md §1/§2.1-2.4/§4.1-4.4/§6.4"""
     parts = [
         ("核心原则", _sec("technology.md", r"## 1\.[^\n]*\n", r"\n---|\n## 2")),
-        ("单挑统计参考值（对照「对手画像」本局统计判断偏离方向）", _sec("gto.md", r"### 8\.1[^\n]*\n", r"\n---|\n## 9")),
+        ("开池范围参考（6max 100BB；人数不同时以代码给的「我方位置基线」为准）", _sec("technology.md", r"### 2\.1[^\n]*\n", r"### 2\.2")),
+        ("3-bet", _sec("technology.md", r"### 2\.2[^\n]*\n", r"### 2\.3")),
+        ("大盲防守", _sec("technology.md", r"### 2\.3[^\n]*\n", r"### 2\.4")),
         ("筹码深度", _sec("technology.md", r"### 2\.4[^\n]*\n", r"\n---|\n## 3")),
+        ("统计参考值（多人桌，对照「对手画像」判断偏离方向）", _sec("gto.md", r"## 8\.[^\n]*\n", r"### 8\.1")),
+        ("单挑统计参考值", _sec("gto.md", r"### 8\.1[^\n]*\n", r"\n---|\n## 9")),
         ("读牌面", _sec("technology.md", r"### 4\.1[^\n]*\n", r"### 4\.2")),
         ("SPR（代码在「当前局面」给出）", _sec("technology.md", r"### 4\.2[^\n]*\n", r"### 4\.3")),
         ("下注的目的", _sec("technology.md", r"### 4\.3[^\n]*\n", r"### 4\.4")),
         ("转牌和河牌", _sec("technology.md", r"### 4\.4[^\n]*\n", r"\n---|\n## 5")),
+        ("多人底池中的偏移", _sec("technology.md", r"### 6\.4[^\n]*\n", r"\n---|\n## 7")),
         ("范围理论", re.sub(r"(?m)^### 4\.\d+ ", "#### ", _sec("gto.md", r"### 4\.1[^\n]*\n", r"\n---|\n## 5"))),
         ("阻断牌", _sec("gto.md", r"## 5\.[^\n]*\n", r"\n---|\n## 6")),
-        ("无差异原则", _sec("gto.md", r"## 3\.[^\n]*\n", r"\n---|\n## 4", drop=("混合策略", "混合频率"))),
+        ("无差异原则与混合策略（执行频率用代码给的随机数 R）", _sec("gto.md", r"## 3\.[^\n]*\n", r"\n---|\n## 4", drop=("手表秒针",))),
         ("翻后下注尺度", _sec("gto.md", r"### 6\.2[^\n]*\n", r"### 6\.3")),
         ("下注尺度速查（所需胜率已由代码算出；MDF / α 用来判断诈唬和防守）", _sec("gto.md", r"### 2\.5[^\n]*\n", r"### 2\.6")),
         ("公式的适用边界", _sec("gto.md", r"### 2\.6[^\n]*\n", r"\n---|\n## 3")),
-        ("Solver 通用结论", re.sub(r"(?m)^\d+\. ", "- ", re.sub(r"；对 UTG[^。\n]*", "", _sec("gto.md", r"## 7\.[^\n]*\n", r"\n---|\n## 8", drop=("SB 对 BB", "多人底池"))))),
+        ("Solver 通用结论", re.sub(r"(?m)^\d+\. ", "- ", _sec("gto.md", r"## 7\.[^\n]*\n", r"\n---|\n## 8"))),
     ]
     body = "\n\n".join(f"### {t}\n{s}" for t, s in parts if s)
-    return "\n\n## 参考资料（来自 gto.md / technology.md，只摘单挑适用的部分）\n" + body if body else ""
+    return "\n\n## 参考资料（来自 gto.md / technology.md）\n" + body if body else ""
 
 
 def _table_brief(table_dir):
@@ -280,15 +312,30 @@ STAT_FIELDS = (
     ("xr_opp", "翻牌让牌后面对我方下注"), ("xr", "翻牌 check-raise"),
     ("agg", "翻后下注/加注次数"), ("calls", "翻后跟注次数"),
     ("wtsd", "到摊牌"), ("wsd", "摊牌赢（我方亏）"),
+    # 以下为多人桌口径（2026-10 起；单挑手只计 ld/rv/rr）
+    ("mw_n", "多人桌手数（3 人以上）"),
+    ("rfi_ep_opp", "前位(UTG~MP)未入池时轮到他"), ("rfi_ep", "前位开池"), ("rfi_hj_opp", "HJ 未入池时轮到他"), ("rfi_hj", "HJ 开池"),
+    ("rfi_co_opp", "CO 未入池时轮到他"), ("rfi_co", "CO 开池"), ("rfi_bt_opp", "BTN 未入池时轮到他"), ("rfi_bt", "BTN 开池"),
+    ("rfi_sb_opp", "SB 未入池时轮到他"), ("rfi_sb", "SB 开池"),
+    ("m3_opp", "面对开局加注（未 3bet 前）"), ("m3", "多人桌 3bet"), ("mc", "面对开局加注跟注"),
+    ("mf3_opp", "开池后面对 3bet"), ("mf3", "面对 3bet 弃牌"), ("m4_opp", "面对 3bet（自己开池或冷跟后）"), ("m4", "多人桌 4bet"),
+    ("m5_opp", "面对 4bet"), ("m5", "5bet/全下"),
+    ("ld_opp", "翻牌在翻前进攻方之前行动且无人下注"), ("ld", "翻牌领打(donk)"),
+    ("rv_opp", "河牌轮到他时无人下注"), ("rv", "河牌主动下注"), ("rr_opp", "河牌面对下注"), ("rr", "河牌面对下注加注"),
 )
 STAT_KEYS = tuple(k for k, _ in STAT_FIELDS)
 _RAISE = re.compile(r"加注|全下|下注到")
 
 
 def opp_stats(hands):
-    """从已结束的手（rec: pos=我方位置 BTN/BB, ev, board, how, delta）统计对手计数（字段见 STAT_FIELDS）。
-    看不到对手按钮位直接弃牌的手（这类手不进记录），所以按钮位的分母是“有行动”的手。"""
-    S = dict.fromkeys(STAT_KEYS, 0); S["n"] = len(hands)
+    """从已结束的手（rec: pos=我方位置, ev, board, how, delta）统计对手计数（字段见 STAT_FIELDS）。
+    单挑手（np 缺省或 2）：对手=“对手”；看不到对手按钮位直接弃牌的手（这类手不进记录），所以按钮位的分母是“有行动”的手。
+    多人手（np>2）：统计 opp_pos 那个位置的玩家（对手库按 seats 展开时填上）；没有 opp_pos 的多人手跳过。"""
+    multi = [h for h in hands if (h.get("np") or 2) > 2 and h.get("opp_pos")]
+    hands = [h for h in hands if (h.get("np") or 2) <= 2]
+    S = dict.fromkeys(STAT_KEYS, 0); S["n"] = len(hands) + len(multi)
+    for h in multi: _multi_counts(S, h)
+    for h in hands: _late_counts(S, T.walk_full([tuple(x) for x in h.get("ev") or []], h.get("pos"), 2), "opp")
     opp_r = lambda e: e.startswith("对手") and bool(_RAISE.search(e))
     me_r = lambda e: e.startswith("我方") and bool(_RAISE.search(e))
     nxt = lambda seq, i, who: next((j for j in range(i, len(seq)) if seq[j].startswith(who)), None)
@@ -371,6 +418,81 @@ def opp_stats(hands):
     return S
 
 
+def _late_counts(S, w, k):
+    """单挑/多人通用：翻牌领打、河牌主动下注、河牌面对下注加注（k=对手 key）"""
+    pre = [a for a in w["acts"] if a["st"] == "翻前"]
+    pa = next((a["key"] for a in reversed(pre) if a["agg"]), None)        # 翻前最后的进攻方
+    for st in ("翻牌", "河牌"):
+        A = [a for a in w["acts"] if a["st"] == st]
+        i = next((n for n, a in enumerate(A) if a["key"] == k), None)
+        if i is None: continue
+        bet_before = any(a["typ"] in ("bet", "raise", "allin") for a in A[:i])
+        if st == "翻牌":
+            if pa and pa != k and not bet_before and any(a["key"] == pa for a in A[i + 1:]):
+                S["ld_opp"] += 1; S["ld"] += A[i]["typ"] in ("bet", "allin")
+            continue
+        if not bet_before: S["rv_opp"] += 1; S["rv"] += A[i]["typ"] in ("bet", "allin")
+        j = next((n for n in range(len(A)) if A[n]["key"] == k and any(a["typ"] in ("bet", "raise", "allin") and a["key"] != k for a in A[:n])), None)
+        if j is not None: S["rr_opp"] += 1; S["rr"] += A[j]["agg"]
+
+
+def _multi_counts(S, h):
+    """一手多人桌记录里 opp_pos 那个玩家的计数（翻前按位置开池/3bet/4bet/5bet，翻后 cbet/面对cbet/check-raise/AF/摊牌）"""
+    np_, k = h.get("np"), h["opp_pos"]
+    w = T.walk_full([tuple(x) for x in h.get("ev") or []], h.get("pos"), np_)
+    if k == h.get("pos") or k not in w["pos_of"]: return
+    S["mw_n"] += 1
+    pre = [a for a in w["acts"] if a["st"] == "翻前"]
+    mine = [(n, a) for n, a in enumerate(pre) if a["key"] == k]
+    if not mine and (k in w["folded"] or k not in w["active"]) and k in w["keys"]:          # 没记录动作、行动已轮过他 = 弃牌：补一个虚拟弃牌，计入开池/面对开局的机会
+        after = w["keys"][w["keys"].index(k) + 1:]
+        n0 = next((n for n, a in enumerate(pre) if a["key"] in after), len(pre))
+        v = {"st": "翻前", "key": k, "pos": w["pos_of"][k], "typ": "fold", "agg": False, "to": 0, "lv": None}
+        pre = pre[:n0] + [v] + pre[n0:]; mine = [(n0, v)]
+    if mine or k in w["folded"]: S["vp_n"] += 1
+    if any(a["typ"] in ("call", "limp", "raise", "bet", "allin") for _, a in mine): S["vp"] += 1
+    if any(a["agg"] for _, a in mine): S["pfr"] += 1
+    opened = False
+    for n, a in mine:
+        before = pre[:n]
+        lv = max([b["lv"] for b in before if b["agg"]] or [1])
+        if lv == 1 and not any(b["typ"] in ("call", "limp") for b in before) and a["pos"] != "BB":
+            g = T.group(a["pos"], np_); S[f"rfi_{g}_opp"] += 1; S[f"rfi_{g}"] += a["agg"]; opened = a["agg"]
+        elif lv == 2 and not opened and not any(b["key"] == k and b["agg"] for b in before):
+            S["m3_opp"] += 1; S["m3"] += a["agg"]; S["mc"] += a["typ"] == "call"
+        elif lv == 3:
+            if opened: S["mf3_opp"] += 1; S["mf3"] += a["typ"] == "fold"
+            S["m4_opp"] += 1; S["m4"] += a["agg"]
+        elif lv >= 4:
+            S["m5_opp"] += 1; S["m5"] += a["agg"]
+    pa = next((a["key"] for a in reversed(pre) if a["agg"]), None)
+    board = h.get("board") or []
+    alive_flop = k not in w["folded"] or any(a["key"] == k and a["st"] != "翻前" for a in w["acts"])
+    if len(board) >= 3 and alive_flop:
+        S["flop"] += 1
+        fl = [a for a in w["acts"] if a["st"] == "翻牌"]
+        i = next((n for n, a in enumerate(fl) if a["key"] == k), None)
+        bet = lambda a: a["typ"] in ("bet", "raise", "allin")
+        if i is not None:
+            if pa == k and not any(bet(a) for a in fl[:i]):
+                S["cb_opp"] += 1; S["cb"] += bet(fl[i])
+                tu = [a for a in w["acts"] if a["st"] == "转牌"]
+                j = next((n for n, a in enumerate(tu) if a["key"] == k), None)
+                if bet(fl[i]) and j is not None and not any(bet(a) for a in tu[:j]): S["cb2_opp"] += 1; S["cb2"] += bet(tu[j])
+            fb = next((a for a in fl[:i] if bet(a)), None)
+            if fb and fb["key"] == pa and pa != k:
+                S["fcb_opp"] += 1; S["fcb"] += fl[i]["typ"] == "fold"; S["rcb"] += fl[i]["agg"]
+            if fl[i]["typ"] == "check":
+                r = next((a for a in fl[i + 1:] if a["key"] == k), None)
+                if r is not None and any(bet(a) for a in fl[i + 1:fl.index(r)]): S["xr_opp"] += 1; S["xr"] += r["agg"]
+        for a in w["acts"]:
+            if a["st"] == "翻前" or a["key"] != k: continue
+            if bet(a): S["agg"] += 1
+            elif a["typ"] == "call": S["calls"] += 1
+        if "摊牌" in (h.get("how") or "") and k not in w["folded"]: S["wtsd"] += 1
+    _late_counts(S, w, k)
+
+
 def _type_line(table_dir, opp):
     """<opp>.md 里「类型：」一行（模板占位不算）"""
     p = profile_path(table_dir, opp)
@@ -404,62 +526,35 @@ def profile_block(S, desc, n_hist=0, pop=None):
     return _stat_lines(S, scope) + [f"  简述：{desc}"] + tail
 
 
-def _stat_lines(S, scope):
+def _stat_lines(S, scope, multi=False):
+    """multi=True（多人桌决策）：翻前换成多人口径（按位置开池 / 面对开局 3bet、跟注 / 面对 3bet、4bet），不写盈亏（多人手无法归属）"""
     S = dict(dict.fromkeys(STAT_KEYS, 0), **S)
     af = f"{S['agg'] / S['calls']:.1f}" if S["calls"] else "—"
+    late = (f"  领打/河牌：翻牌领打{_pct(S['ld'], S['ld_opp'])}、河牌主动下注{_pct(S['rv'], S['rv_opp'])}、"
+            f"河牌面对下注加注{_pct(S['rr'], S['rr_opp'])}")
+    post = [f"  翻牌：cbet{_pct(S['cb'], S['cb_opp'])}、面对cbet弃{_pct(S['fcb'], S['fcb_opp'])}/加注{_pct(S['rcb'], S['fcb_opp'])}、"
+            f"check-raise{_pct(S['xr'], S['xr_opp'])}、看翻牌{S['flop']}手",
+            f"  转牌/河牌：转牌二次cbet{_pct(S['cb2'], S['cb2_opp'])}、翻后下注加注{S['agg']}次/跟注{S['calls']}次（AF {af}）、"
+            f"到摊牌{_pct(S['wtsd'], S['flop'])}" + ("" if multi else f"、摊牌赢{_pct(S['wsd'], S['wtsd'])}")]
+    if multi:
+        return [f"  翻前：{scope}（多人桌{S['mw_n']}手）VPIP{_pct(S['vp'], S['vp_n'])}、PFR{_pct(S['pfr'], S['vp_n'])}、"
+                f"开池 前位{_pct(S['rfi_ep'], S['rfi_ep_opp'])}/HJ{_pct(S['rfi_hj'], S['rfi_hj_opp'])}/CO{_pct(S['rfi_co'], S['rfi_co_opp'])}/"
+                f"BTN{_pct(S['rfi_bt'], S['rfi_bt_opp'])}/SB{_pct(S['rfi_sb'], S['rfi_sb_opp'])}",
+                f"  面对开局：3B{_pct(S['m3'], S['m3_opp'])}、跟注{_pct(S['mc'], S['m3_opp'])}；开池后面对3B弃{_pct(S['mf3'], S['mf3_opp'])}、"
+                f"4B{_pct(S['m4'], S['m4_opp'])}、面对4B再加注{_pct(S['m5'], S['m5_opp'])}"] + post + [late]
     return [f"  盈亏：收池{_pct(S['won'], S['n'])}、入池后收池{_pct(S['vp_won'], S['vp'])}、对手净赢 {bb(S['net'])}BB"
             + (f"（{S['net'] / 2 / S['n'] * 100:+.0f}BB/100手）" if S["n"] else ""),
             f"  翻前：{scope} VPIP{_pct(S['vp'], S['vp_n'])}、PFR{_pct(S['pfr'], S['vp_n'])}、开池{_pct(S['open'], S['btn'])}、limp{_pct(S['limp'], S['btn'])}、"
             f"3B{_pct(S['b3'], S['vs_open'])}、4B{_pct(S['b4'], S['f3_opp'])}、大盲面对开池弃{_pct(S['bb_fold'], S['vs_open'])}、"
             f"面对3B弃{_pct(S['f3_fold'], S['f3_opp'])}、面对4B弃{_pct(S['f4_fold'], S['f4_opp'])}、对limp加注{_pct(S['iso'], S['vs_limp'])}",
-            f"  翻牌：cbet{_pct(S['cb'], S['cb_opp'])}、面对cbet弃{_pct(S['fcb'], S['fcb_opp'])}/加注{_pct(S['rcb'], S['fcb_opp'])}、"
-            f"check-raise{_pct(S['xr'], S['xr_opp'])}、看翻牌{S['flop']}手",
-            f"  转牌/河牌：转牌二次cbet{_pct(S['cb2'], S['cb2_opp'])}、翻后下注加注{S['agg']}次/跟注{S['calls']}次（AF {af}）、"
-            f"到摊牌{_pct(S['wtsd'], S['flop'])}、摊牌赢{_pct(S['wsd'], S['wtsd'])}"]
+            ] + post + ([late] if S["rv_opp"] or S["ld_opp"] or S["rr_opp"] else [])
 
 
-def walk(ev, hero_pos):
-    """按事件逐步累计投入。返回 (steps, prior)：steps=[(街, who, 动作文本(BB), 该玩家本手累计投入)]；
-    prior[街]={'me','opp'} 为该街开始前的累计投入（筹码）。"""
-    me_btn = hero_pos == "BTN"
-    c = {"me": 1 if me_btn else 2, "opp": 2 if me_btn else 1}     # 本街累计
-    base = {"me": 0, "opp": 0}
-    prior, steps, cur = {"翻前": dict(base)}, [], "翻前"
-    for s, e in ev:
-        if s not in ORDER: continue               # 异常街名（如动画帧的 '?'）跳过，不中断结算
-        if s != cur:
-            while cur != s and ORDER.index(cur) < ORDER.index(s):
-                hi = max(c.values())
-                base = {k: base[k] + hi for k in c}
-                cur = ORDER[ORDER.index(cur) + 1]
-                prior[cur] = dict(base); c = {"me": 0, "opp": 0}
-        who = "me" if e.startswith("我方") else "opp"
-        o = "opp" if who == "me" else "me"
-        body = e[2:]
-        lv = re.search(r"(\dbet)", body)
-        lv = f"（{lv.group(1)}）" if lv and s == "翻前" else ""
-        if "全下" in body:
-            m = re.search(r"共 ?(\d+)", body)
-            if m: c[who] = int(m.group(1))
-            txt = "全下" + (f" {bb(int(m.group(1)))}BB" if m else "")
-        elif "平跟" in body:
-            c[who] = 2; txt = "平跟(limp) 0.5BB"
-        elif "跟注" in body:
-            m = re.search(r"到 ?(\d+)", body)
-            if m: c[o] = max(c[o], int(m.group(1)))      # “跟注到 X”：对方至少下到了 X
-            amt = max(c[o] - c[who], 0); c[who] = c[o]; txt = f"跟注 {bb(amt)}BB"
-        elif re.search(r"到 ?(\d+)", body):
-            v = int(re.search(r"到 ?(\d+)", body).group(1)); c[who] = v
-            verb = "加注到" if "加注" in body else "下注"
-            txt = f"{verb} {bb(v)}BB{lv}"
-        elif re.search(r"下注 ?(\d+)", body):
-            v = int(re.search(r"下注 ?(\d+)", body).group(1)); c[who] = v; txt = f"下注 {bb(v)}BB"
-        elif "?" in body:
-            txt = re.sub(r"（.*", "", body).replace("?", "?BB") + lv
-        else:
-            txt = body
-        steps.append((s, who, txt, base[who] + c[who]))
-    return steps, prior, cur, c, base
+def walk(ev, hero_pos, n=2):
+    """按事件逐步累计投入（tools/table.walk_full 的旧接口）。返回 (steps, prior, cur, c, base)：steps=[(街, who, 动作文本(BB), 该玩家本手累计投入)]；
+    prior[街]={who: 该街开始前的累计投入（筹码）}。单挑 who=me/opp；多人桌 who=me/位置名。"""
+    w = T.walk_full(ev, hero_pos, n)
+    return w["steps"], w["prior"], w["cur"], w["c"], w["base"]
 
 
 ACT = (("弃牌", "fold"), ("让牌", "check"), ("平跟", "limp"), ("跟注", "call"), ("全下", "allin"), ("加注", "raise"), ("下注", "bet"))
@@ -470,21 +565,21 @@ def hand_detail(rec, table=None, msgs=None):
     msgs=该手模型对话所在文件（tables/<桌>/msgs.jsonl，按 hid 关联）。
     acts[i] = {st 街, who me/opp, pos BTN/BB, act fold/check/limp/call/bet/raise/allin, add 本次投入, to 本街累计到,
                pot 动作前底池, left 动作后剩余筹码（起始筹码未知时为 None）}"""
-    pos = rec.get("pos")
-    steps, prior, *_ = walk(rec.get("ev") or [], pos)
-    me_btn = pos == "BTN"
-    last = {"me": 1 if me_btn else 2, "opp": 2 if me_btn else 1}            # 盲注
+    pos, np_ = rec.get("pos"), rec.get("np") or 2
+    w = T.walk_full(rec.get("ev") or [], pos, np_)
+    steps, prior = w["steps"], w["prior"]
+    last = T.blinds(pos, np_)                                                # 盲注
     start = rec.get("start") or {}
     acts = []
-    for (s, who, txt, tot), (_, e) in zip(steps, rec.get("ev") or []):
-        a = next((v for k, v in ACT if k in e), "?")
+    for (s, who, txt, tot), a in zip(steps, w["acts"]):
         street_base = (prior.get(s) or {}).get(who, 0)
-        acts.append({"st": EN[s], "who": who, "pos": (pos if who == "me" else OTHER.get(pos)) or "?", "act": a,
-                     "add": round((tot - last[who]) / 2, 1), "to": round((tot - street_base) / 2, 1),
-                     "pot": round((last["me"] + last["opp"]) / 2, 1),
+        acts.append({"st": EN[s], "who": who, "pos": (pos if who == "me" else w["pos_of"].get(who)) or "?", "act": a["typ"],
+                     "add": round((tot - last.get(who, 0)) / 2, 1), "to": round((tot - street_base) / 2, 1),
+                     "pot": round(sum(last.values()) / 2, 1),
                      "left": None if start.get(who) is None else round(max(start[who] - tot, 0) / 2, 1)})
-        last[who] = max(last[who], tot)
+        last[who] = max(last.get(who, 0), tot)
     d = {k: rec.get(k) for k in ("hid", "t", "n", "opp", "pos", "hero", "board", "ev", "how", "delta")}
+    if np_ > 2: d["np"], d["seats"] = np_, rec.get("seats") or {}
     if table or rec.get("table"): d["table"] = table or rec.get("table")
     if start: d["start_bb"] = {k: round(v / 2, 1) for k, v in start.items() if v is not None}
     d["acts"] = acts
@@ -493,32 +588,46 @@ def hand_detail(rec, table=None, msgs=None):
     return d
 
 
-def snapshot_bb(st, hist):
-    """当前局面快照（BB 单位），只放决策需要的代码计算结果"""
+def snapshot_bb(st, hist, ctx=None):
+    """当前局面快照（BB 单位），只放决策需要的代码计算结果。
+    ctx（session 给）：x=翻前最后进攻者的范围前X%（翻前面对大注用）、k=仍在局的对手数（含未行动）、base=我方位置基线、
+    behind=本街我方之后还没行动的对手位置、eff=有效筹码（筹码）、multi=多人桌"""
     n, b = st.get("nums") or {}, st["buttons"]
     hero, board = st["hero"], st["board"]
+    ctx = ctx or {}
     L = []
     pr = wpstate.preflop_rank(hero) if not board else None
-    if pr: L.append(f"起手牌 {pr[0]} 前{pr[1]['top']:.0f}%（单挑对随机牌胜率 {pr[1]['eq']:.0f}%）")
+    k = ctx.get("k") or 1
+    if pr:
+        mw = T.mw_eq(pr[1], k) if k >= 2 else None
+        L.append(f"起手牌 {pr[0]} 前{pr[1]['top']:.0f}%（单挑对随机牌胜率 {pr[1]['eq']:.0f}%"
+                 + (f"；对{k}个随机对手胜率 {mw:.0f}%" if mw else "") + "）")
+    if pr and ctx.get("base"): L.append("我方位置基线 " + ctx["base"])
     md = wpstate.made_desc(hero, board)
     if md: L.append("牌力 " + md[0].split(": ", 1)[1] + ("；" + md[1].replace(": ", " ") if len(md) > 1 else ""))
     pot, tc, ms, os_ = n.get("pot"), n.get("to_call"), n.get("my_stack"), n.get("opp_stack")
     if pot is not None:
         ep = wpstate.cap_call(n)[0]
-        L.append(f"底池 {bb(pot)}BB（本街 对手 {bb(n.get('opp_bet') or 0)} / 我方 {bb(n.get('my_bet') or 0)}）"
+        L.append(f"底池 {bb(pot)}BB（本街 {'最高注' if ctx.get('multi') else '对手'} {bb(n.get('opp_bet') or 0)} / 我方 {bb(n.get('my_bet') or 0)}）"
                  + (f"；对手超出我方筹码的部分会退回，有效底池 {bb(ep)}BB" if ep is not None and ep < pot else ""))
-    if ms is not None and os_ is not None:
-        L.append(f"有效筹码 {bb(min(ms + (n.get('my_bet') or 0), os_ + (n.get('opp_bet') or 0)))}BB")
-        ep = wpstate.cap_call(n)[0] if pot is not None else None
+    if ms is not None and (os_ is not None or ctx.get("eff") is not None):
+        eff = ctx["eff"] if ctx.get("eff") is not None else min(ms + (n.get('my_bet') or 0), os_ + (n.get('opp_bet') or 0))
+        L.append(f"有效筹码 {bb(eff)}BB" + ("（我方 vs 在局对手中筹码最深者）" if ctx.get("multi") else ""))
+        ep = wpstate.cap_call(n)[0] if pot is not None and os_ is not None else pot
         if board and ep:                       # SPR = 双方剩余较小者 / 当前（有效）底池
-            L.append(f"SPR {min(ms, os_) / ep:.1f}")
+            L.append(f"SPR {min(ms, os_ if os_ is not None else eff) / ep:.1f}")
     if tc:
         pot, tc = wpstate.cap_call(n)          # 对手下注超过我方筹码时，多出的部分会退回，不算赔率
         need = tc / ((pot or 0) + tc) * 100
         L.append(f"需跟注 {bb(tc)}BB，所需胜率 {need:.0f}%" + ("（跟注即全下）" if ms is not None and tc >= ms else ""))
         if pr and tc > 10:
-            lv = hist.level if hist is not None and getattr(hist, "street", None) == "翻前" else 2
-            L.append(wpstate.big_line(pr[1], need, lv, (n.get("opp_bet") or 0) / 2))
+            if ctx.get("x"):                   # 用代码推出的对手范围（范围表里最后进攻者那一行）
+                x = ctx["x"]; e = T.vs_eq(pr[1], x)
+                L.append(f"翻前面对大注 对其范围(约前{T._fmt(x)}%)胜率约 {e:.0f}% {'≥' if e >= need else '<'} 所需 {need:.0f}%（{'够跟' if e >= need else '不够'}）"
+                         + (f"；另有{k - 1}个对手在局或未行动，实际胜率更低（近似）" if k >= 2 else ""))
+            else:
+                lv = hist.level if hist is not None and getattr(hist, "street", None) == "翻前" else 2
+                L.append(wpstate.big_line(pr[1], need, lv, (n.get("opp_bet") or 0) / 2))
     if md and len(board) in (3, 4):
         L.extend(wpstate.draw_line(md[-1], len(board)))
     opts = []
@@ -533,6 +642,7 @@ def snapshot_bb(st, hist):
                 if p["frac"].endswith("BB"): ps.append(p["frac"] if a is None or abs(a / 2 - float(p["frac"][:-2])) < .01 else f"{p['frac']}={bb(a)}BB")
                 else: ps.append(f"{p['frac']}池" + (f"={bb(a)}BB" if a is not None else ""))
             opts.append(f"{k}[{'加注到 ' if tc and ps else ''}{'、'.join(ps)}]" if ps else k)
+    if ctx.get("behind"): L.append(f"身后未行动 {'、'.join(ctx['behind'])}（我方动作后他们还会行动，可能加注）")
     L.append("可选 " + " / ".join(opts))
     return L
 
@@ -567,7 +677,9 @@ class HandSession:
         self.hero_name = hero_name or self._hero_name(table_dir)
         self.recent, self.hands = [], []     # 最近几手摘要（文本） / 本局已结束手的结构化记录（算统计）
         self.msgs, self.ev_ref = [], None
-        self.cur = None                      # 当前手：{"hero","board","pos","start_total","ev","start"}
+        self.cur = None                      # 当前手：{"hero","board","pos","start_total","ev","start","np","seats"}
+        self.book = {}                       # 多人桌：对手昵称 -> {"hist": 跨桌累计统计, "prof": 画像}（add_opp 注入 / 后台查库）
+        self.rng, self.fixed_r, self.last_r = random.Random(), None, None   # 每次决策的随机数 R（混合策略按频率执行）；fixed_r=评测固定值
         self._restat()
         self.dynamic = self._dyn()
         self.n_hands = 0
@@ -576,6 +688,33 @@ class HandSession:
         self.static = SYS_STATIC.format(exploit=_exploit_table(), reference=_reference(),
                                         table=_table_brief(self.table_dir) + (f"\n- 当前对手：{self.opp}" if self.opp else ""),
                                         output=OUT_EXPLAIN if self.explain else OUT_LIVE)
+
+    # ---- 多人桌对手 ----
+    def add_opp(self, name, stats=None, prof=None):
+        """登记一个多人桌对手的跨桌统计和画像（评测注入；真机由座位识别后查库填，见 _load_seats）"""
+        self.book[name] = {"hist": stats, "prof": prof}
+
+    def _load_seats(self, seats):
+        """新一手的座位里有没见过的昵称：后台查对手库（统计 + 画像），查到前按本局统计/基线"""
+        new = [nm for nm in seats.values() if nm and nm not in self.book]
+        if not new: return
+        for nm in new: self.book[nm] = {"hist": None, "prof": None}
+        if self.store is None: return
+        def run():
+            for nm in new:
+                try:
+                    d = self.store.lookup(nm)
+                    self.book[nm] = {"hist": d and d["stats"], "prof": find_profile(self.table_dir, nm, d)}
+                except Exception as e: self.log(f"[session] 加载对手 {nm} 失败: {type(e).__name__}: {e}")
+        threading.Thread(target=run, daemon=True).start()
+
+    def opp_S(self, name, pos=None):
+        """多人桌某对手的统计：跨桌累计 + 本局他入座的多人手"""
+        mine = [dict(h, opp_pos=p) for h in self.hands if (h.get("np") or 2) > 2
+                for p, nm in (h.get("seats") or {}).items() if same_opp(nm, name) and p != h.get("pos")]
+        cur = opp_stats(mine)
+        hist = (self.book.get(name) or {}).get("hist") or {}
+        return {k: v + hist.get(k, 0) for k, v in cur.items()}, cur["n"]
 
     # ---- 对手识别 / 异步加载 ----
     def see_opp(self, raw):
@@ -656,7 +795,7 @@ class HandSession:
             p = Path(os.fspath(p)); p.parent.mkdir(parents=True, exist_ok=True)
             tb = Path(self.table_dir).name if self.table_dir else None
             with open(p, "a", encoding="utf-8") as f: f.write(json.dumps(hand_detail(rec, tb, msgs), ensure_ascii=False) + "\n")
-        if self.store is not None and self.store_write and rec.get("opp"):
+        if self.store is not None and self.store_write and (rec.get("opp") or rec.get("seats")):
             try: self.store.add_hands([rec])            # 这一手的计数直接加到该对手那一行（UPDATE n=n+1, vp=vp+…）
             except Exception as e: self.log(f"[session] 写对手库失败: {type(e).__name__}: {e}")
         if self.on_hand_end:
@@ -697,6 +836,15 @@ class HandSession:
         return m.group(1) if m else "乌贼69"
 
     def _dyn(self):
+        c = self.cur or {}
+        if (c.get("np") or 2) > 2:
+            L = ["## 对手画像（本手入座的对手，手与手之间由代码更新）"]
+            for p, nm in (c.get("seats") or {}).items():
+                if p == c.get("pos") or not nm: continue
+                pf = (self.book.get(nm) or {}).get("prof")
+                L.append(f"### {p}[{nm}]\n" + (profile_text(pf["profile"], 800) if pf else "暂无画像，按统计和基线"))
+            L += ["", "## 最近几手（代码记录，单位 BB）"] + (self.recent[-self.keep:] or ["(本局刚开始)"])
+            return "\n".join(L)
         L = ["## 对手画像（手与手之间由代码更新）", _profile_brief(self.table_dir, self.opp, prof=self.prof and self.prof["profile"])]
         if self.n_hist and not self.recent:
             L += ["", f"## 与该对手的历史（此前 {self.n_hist} 手，跨桌累计；统计已并入手牌下方的对手画像）"]
@@ -709,29 +857,40 @@ class HandSession:
         ms = n.get("my_stack")
         return None if ms is None else ms + (n.get("my_bet") or 0)
 
-    def _name(self, who, pos):
-        return f"{pos or '?'}[{self.hero_name if who == 'me' else (self.opp or '对手')}]"
+    def _name(self, who, pos, seats=None):
+        if who == "me": nm = self.hero_name
+        elif seats is not None: nm = seats.get(pos) or "玩家"
+        else: nm = self.opp or "对手"
+        return f"{pos or '?'}[{nm}]"
 
-    def lines(self, ev, pos, board, start, cur_street=None):
-        """逐街行动线（位置[用户名] 动作，剩余 BB）。start={'me','opp'} 本手开始时总筹码。"""
-        steps, prior, last, _, _ = walk(ev, pos)
+    def lines(self, ev, pos, board, start, cur_street=None, np_=2, seats=None):
+        """逐街行动线（位置[用户名] 动作，剩余 BB）。start={key: 本手开始时总筹码}（单挑 key=me/opp，多人 me/位置名）。"""
+        w = T.walk_full(ev, pos, np_)
+        steps, prior, last, pos_of = w["steps"], w["prior"], w["cur"], w["pos_of"]
         streets = ORDER[:ORDER.index(cur_street) + 1] if cur_street in ORDER else ORDER[:ORDER.index(last) + 1]
-        mp, op = pos, OTHER.get(pos)
+        mp = pos
+        sv = seats if np_ > 2 else None
         out = []
         for s in streets:
-            if s == "翻前": head = f"{EN[s]}（盲注 {'我方' if mp == 'BTN' else '对手'} BTN 0.5BB / {'对手' if mp == 'BTN' else '我方'} BB 1BB）:"
+            if s == "翻前":
+                if np_ <= 2: head = f"{EN[s]}（盲注 {'我方' if mp == 'BTN' else '对手'} BTN 0.5BB / {'对手' if mp == 'BTN' else '我方'} BB 1BB）:"
+                else:
+                    nm = {pos_of[k]: self._name(k, pos_of[k], sv) for k in pos_of if pos_of[k] in ("SB", "BB")}
+                    head = f"{EN[s]}（{np_}人桌，盲注 {nm.get('SB')} 0.5BB / {nm.get('BB')} 1BB）:"
             else:
                 cards = {"翻牌": board[:3], "转牌": board[3:4], "河牌": board[4:5]}[s]
                 pr = prior.get(s)
-                head = f"{EN[s]} [{' '.join(cards)}]" + (f" 底池 {bb(pr['me'] + pr['opp'])}BB" if pr else "") + ":"
+                head = f"{EN[s]} [{' '.join(cards)}]" + (f" 底池 {bb(sum(pr.values()))}BB" if pr else "") + ":"
             acts = []
             for s2, who, txt, tot in steps:
                 if s2 != s: continue
                 rem = None if start.get(who) is None else max(start[who] - tot, 0)
                 tag = "(我方)" if who == "me" else ""
-                acts.append(f"{self._name(who, mp if who == 'me' else op)}{tag} {txt}，剩余 {bb(rem)}BB" + ("（全下）" if rem == 0 else ""))
+                if txt == "弃牌" and who != "me": rem = None
+                acts.append(f"{self._name(who, pos_of.get(who), sv)}{tag} {txt}" + ("" if rem is None and txt == "弃牌" else f"，剩余 {bb(rem)}BB")
+                            + ("（全下）" if rem == 0 else ""))
             if s == cur_street:
-                acts.append(f"轮到 {self._name('me', mp)}(我方)")
+                acts.append(f"轮到 {self._name('me', mp, sv)}(我方)")
             out.append(head + " " + (" -> ".join(acts) if acts else "(无动作)"))
         return out
 
@@ -748,7 +907,7 @@ class HandSession:
         elif delta is not None and abs(delta) > 0 and len(c["board"]) == 5: how = "摊牌或河牌后结束"
         else: how = "结束方式未知"
         line = (f"手牌 #{self.n_hands} 我方{c['pos'] or '?'} {' '.join(c['hero'])} | "
-                + " ".join(self.lines(ev, c["pos"], c["board"], c.get("start") or {}))
+                + " ".join(self.lines(ev, c["pos"], c["board"], c.get("start") or {}, np_=c.get("np") or 2, seats=c.get("seats")))
                 + f" | {how}，我方 {'?' if delta is None else ('+' if delta > 0 else '') + bb(delta)}BB")
         if delta is not None and abs(delta) > 400: line += "（变化过大，可能有补码或漏观察的手）"
         self.recent.append(line)
@@ -757,16 +916,24 @@ class HandSession:
             except Exception: pass
         rec = {"hid": f"{self.sid}-{self.n_hands:04d}", "t": time.strftime("%Y-%m-%d %H:%M:%S"), "n": self.n_hands, "opp": self.opp, "pos": c["pos"], "hero": c["hero"],
                "board": c["board"], "ev": ev, "how": how, "delta": delta, "start": dict(c.get("start") or {}), "msgs": self.msgs}
+        if (c.get("np") or 2) > 2: rec.update(opp=None, np=c["np"], seats=dict(c.get("seats") or {}))
         self.hands.append(rec)
-        if self.opp is None: self._unwritten.append(rec)       # 对手未识别：等识别出来再写（补上 opp）
+        if rec.get("np"): self._emit(rec)                      # 多人桌：座位昵称已在 seats 里
+        elif self.opp is None: self._unwritten.append(rec)     # 对手未识别：等识别出来再写（补上 opp）
         else: self._emit(rec)
 
+    def _r(self):
+        self.last_r = self.fixed_r if self.fixed_r is not None else self.rng.randint(0, 99)
+        return self.last_r
+
     def user_text(self, st, hist):
-        c, n = self.cur, st.get("nums") or {}
+        c = self.cur
+        if (c.get("np") or 2) > 2: return self._user_multi(st, hist)
+        n = st.get("nums") or {}
         pos, street = c["pos"], wpstate.STREETS.get(len(st["board"]), "翻前")
         # 以当前帧为准反推本手开始时的总筹码：start = 当前剩余 + 之前各街投入 + 本街已下
-        _, prior, _, _, _ = walk(hist.ev, pos)
-        pr = prior.get(street) or {"me": 0, "opp": 0}
+        w = T.walk_full(hist.ev, pos, 2)
+        pr = w["prior"].get(street) or {"me": 0, "opp": 0}
         for who, sk, bk in (("me", "my_stack", "my_bet"), ("opp", "opp_stack", "opp_bet")):
             if n.get(sk) is not None: c["start"][who] = n[sk] + pr[who] + (n.get(bk) or 0)
         s = c["start"]
@@ -774,11 +941,69 @@ class HandSession:
         L = [f"手牌 #{self.n_hands}",
              f"当前手牌 {' '.join(st['hero'])}（{wpstate.hand_desc(st['hero'])}" + (f"，{rk[0]} 前{rk[1]['top']:.0f}%" if rk else "") + "）；"
              f"我方 {self._name('me', pos)}，对手 {self._name('opp', OTHER.get(pos))}"]
+        rg = T.preflop_ranges(w, 2, lambda k: self.stats)
         if not any(e.startswith("对手弃牌") for _, e in hist.ev):      # 只写未弃牌的对手（单挑时就是唯一的对手）
             L += [f"对手画像 {self._name('opp', OTHER.get(pos))}（" + ("跨桌累计统计" if self.n_hist else "本局统计") + "，次数/机会=频率）"] + profile_block(self.stats, self.desc, self.n_hist, self.pop)
+            if rg.get("opp"): L.append("对手翻前范围（代码按位置基线 + 他的统计收缩，翻后在此基础上按行动线推演）：" + T.range_text(rg["opp"]))
         L += [f"起始筹码 我方 {bb(s.get('me'))}BB / 对手 {bb(s.get('opp'))}BB"]
         L += self.lines(hist.ev, pos, st["board"], s, cur_street=street)
-        L += ["当前局面（代码计算）"] + snapshot_bb(st, hist)
+        ctx = {"x": rg["opp"]["x"] if rg.get("opp") and street == "翻前" and any(a["agg"] and a["key"] == "opp" for a in w["acts"]) else None,
+               "base": T.hero_baseline(w, 2, pos) if street == "翻前" and pos else None}
+        L += ["当前局面（代码计算）"] + snapshot_bb(st, hist, ctx)
+        self._r()                                   # 抽本次决策的随机数 R（不给模型看；bot_core 按 mix+R 选动作）
+        L.append("现在根据用户行为、画像和相关数据进行决策行动")
+        return "\n".join(L)
+
+    def _user_multi(self, st, hist):
+        """多人桌（3~8 人）：每个未弃牌对手的画像 + 代码给的范围表 + 起始筹码 + 行动线 + 局面"""
+        c, n = self.cur, st.get("nums") or {}
+        pos, street, np_, seats = c["pos"], wpstate.STREETS.get(len(st["board"]), "翻前"), c["np"], c.get("seats") or {}
+        w = T.walk_full(hist.ev, pos, np_)
+        pos_of, active = w["pos_of"], w["active"]
+        cc, base = w["c"], w["base"]
+        stacks = n.get("stacks") or {}                      # 识别到的各位置剩余筹码（多人桌识别给；没有就不写）
+        for k in w["keys"]:
+            rem = n.get("my_stack") if k == "me" else stacks.get(pos_of[k])
+            if rem is not None and (k not in c["start"] or street == "翻前"):
+                c["start"][k] = rem + base.get(k, 0) + cc.get(k, 0)
+        s = c["start"]
+        stat = {}
+        for k in active:
+            if k == "me": continue
+            nm = seats.get(pos_of[k])
+            stat[k] = self.opp_S(nm) if nm else ({}, 0)
+        rg = T.preflop_ranges(w, np_, lambda k: stat.get(k, ({}, 0))[0])
+        rk = wpstate.preflop_rank(st["hero"])
+        opps = [k for k in active if k != "me"]
+        L = [f"手牌 #{self.n_hands}",
+             f"当前手牌 {' '.join(st['hero'])}（{wpstate.hand_desc(st['hero'])}" + (f"，{rk[0]} 前{rk[1]['top']:.0f}%" if rk else "") + "）；"
+             f"{np_}人桌，我方 {self._name('me', pos, seats)}；未弃牌对手 " + ("、".join(self._name(k, pos_of[k], seats) for k in opps) or "无")]
+        for k in opps:
+            S, cur_n = stat[k]
+            nm = seats.get(pos_of[k])
+            hdr = f"对手画像 {self._name(k, pos_of[k], seats)}"
+            if not S.get("n"):
+                L += [hdr + "：无统计样本，按位置基线"]
+                continue
+            pf = (self.book.get(nm) or {}).get("prof")
+            scope = f"累计{S['n']}手" + (f"(本局{cur_n})" if cur_n else "")
+            L += [hdr + "（跨桌累计统计，次数/机会=频率）"] + _stat_lines(S, scope, multi=True) + [f"  简述：{opp_desc(S, typ=pf and pf.get('ptype'))}"]
+        if rg:
+            L.append("对手翻前范围表（代码按人数×位置基线 + 他的统计收缩，翻后在此基础上按行动线推演）：")
+            L += [f"  {self._name(k, r['pos'], seats)}：{T.range_text(r)}" for k, r in rg.items() if k in active]
+        L.append("起始筹码 " + " / ".join(f"{self._name(k, pos_of[k], seats)} {bb(s.get(k))}BB" for k in w["keys"] if k in s and (k == "me" or k in opps)))
+        L += self.lines(hist.ev, pos, st["board"], s, cur_street=street, np_=np_, seats=seats)
+        aggs = [a for a in w["acts"] if a["st"] == "翻前" and a["agg"] and a["key"] != "me"]
+        last = aggs[-1]["key"] if aggs else None
+        mine = (n.get("my_stack") or 0) + (n.get("my_bet") or 0)
+        others = [(stacks.get(pos_of[k]) or 0) + cc.get(k, 0) for k in opps if stacks.get(pos_of[k]) is not None]
+        behind = T.to_act(w, pos, np_, street)
+        ctx = {"multi": True, "k": len(opps) or 1, "behind": behind,
+               "base": T.hero_baseline(w, np_, pos) if street == "翻前" else None,
+               "x": rg[last]["x"] if street == "翻前" and last in rg else None,
+               "eff": min(mine, max(others)) if others and n.get("my_stack") is not None else None}
+        L += ["当前局面（代码计算）"] + snapshot_bb(st, hist, ctx)
+        self._r()                                   # 抽本次决策的随机数 R（不给模型看；bot_core 按 mix+R 选动作）
         L.append("现在根据用户行为、画像和相关数据进行决策行动")
         return "\n".join(L)
 
@@ -790,7 +1015,9 @@ class HandSession:
             self._refresh_prof()
             self.n_hands += 1
             self.ev_ref, self.msgs = hist.ev, []
-            self.cur = {"hero": list(st["hero"]), "board": [], "pos": hist.pos, "start_total": self._total(st), "ev": hist.ev, "start": {}}
+            self.cur = {"hero": list(st["hero"]), "board": [], "pos": hist.pos, "start_total": self._total(st), "ev": hist.ev, "start": {},
+                        "np": getattr(hist, "np", 2) or 2, "seats": dict(getattr(hist, "seats", {}) or {})}
+            if self.cur["np"] > 2: self._load_seats(self.cur["seats"])
             self._restat()
             self.dynamic = self._dyn()           # 画像/近况/统计只在手开始时刷新，手内 system 保持不变
         self.cur["board"] = list(st["board"])

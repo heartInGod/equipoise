@@ -38,6 +38,60 @@ def parse_json(text):
     return json.JSONDecoder().raw_decode(text, i)[0]   # 只取第一个对象，模型偶尔在后面多输出一段
 
 
+# ---- 混合策略：模型给 mix（如 "跟注60 弃牌40"、"下注1/2 70 让牌30"），代码用随机数 R 按累计频率选动作 ----
+MIX_ACT = re.compile(r"弃牌|让牌|跟注|下注|加注|全下")
+
+
+def mix_parse(mix):
+    """-> [(动作, 尺度或None, 频率)]；频率 = 每段最后一个不属于分数(1/2)的整数；“，R=xx→动作”尾巴忽略。解析不了返回 []"""
+    if not isinstance(mix, str): return []
+    head = re.split(r"R\s*[=＝]", mix)[0]
+    ms = list(MIX_ACT.finditer(head))
+    out = []
+    for i, m in enumerate(ms):
+        seg = head[m.end(): ms[i + 1].start() if i + 1 < len(ms) else len(head)]
+        nums = [x for x in re.finditer(r"\d+(?:\.\d+)?", seg)
+                if seg[max(0, x.start() - 1):x.start()] != "/" and seg[x.end():x.end() + 1] != "/"]
+        if not nums: return []
+        f = nums[-1]
+        size = re.sub(r"[\s%,，;；:：]+$", "", seg[:f.start()]).strip(" :：") or None
+        out.append((m.group(0), size, float(f.group(0))))
+    return out if sum(f for _, _, f in out) > 0 else []
+
+
+def mix_pick(mix, r):
+    """R=0~99 落在按书写顺序累计的频率区间里（频率和不是 100 时按比例缩放）-> (动作, 尺度)；解析不了返回 None"""
+    parts = mix_parse(mix)
+    if not parts or r is None: return None
+    tot, acc = sum(f for _, _, f in parts), 0.0
+    for a, sz, f in parts:
+        acc += f
+        if r < acc * 100 / tot: return a, sz
+    return parts[-1][:2]
+
+
+def apply_mix(dec, r, to_call=None):
+    """按 mix+R 覆盖模型的 act（模型自己算区间常算反）；mix 缺失/解析不了时保留模型 act。
+    原 act 记到 act_model；R 选中下注/加注时尺度取 mix 里写的，没写且模型本来就是下注/加注则沿用模型的 size。"""
+    if not isinstance(dec, dict) or r is None: return dec
+    p = mix_pick(dec.get("mix"), r)
+    if p is None: return dec
+    a, sz = p
+    if a == "弃牌" and to_call == 0: a = "让牌"          # 能免费看牌不弃
+    if a == "让牌" and to_call: a = "弃牌"                # 需要跟注时“让牌”= 放弃
+    old = dec.get("act")
+    d = dict(dec, r=r)
+    if a != old:
+        d.update(act=a, act_model=old)
+        if a in ("下注", "加注"):
+            d["size"] = sz if sz else (dec.get("size") if old in ("下注", "加注") else None)
+        else:
+            d["size"] = None
+    elif a in ("下注", "加注") and sz and not dec.get("size"):
+        d["size"] = sz
+    return d
+
+
 # ======================= 点击 IO =======================
 class AdbIO:
     """常驻 `adb shell`：每个动作写一行命令立即返回；设备端按顺序执行。
@@ -551,6 +605,10 @@ class Bot:
             info["t_build"] = round(t_build, 4)
             if dec is None:
                 dec = rule_decide(st, self.hist); info["rule"] = True
+            else:                                  # 混合策略：代码按 mix + 随机数 R 选最终动作
+                d2 = apply_mix(dec, getattr(self.sess, "last_r", None), (st.get("nums") or {}).get("to_call"))
+                if d2.get("act_model"): info["mix_override"] = f"{d2['act_model']}->{d2['act']}(R={d2['r']})"
+                dec = d2
             self.sess.commit(txt, dec)
             return dec, info, txt
         tb = time.time()

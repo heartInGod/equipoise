@@ -541,7 +541,9 @@ LEVEL = {1: "盲注", 2: "开局加注(2bet)", 3: "3bet", 4: "4bet", 5: "5bet"}
 class HandHist:
     """跨帧维护本手行动历史。每到我方回合 observe() 一次（推断对手自上次以来的动作），我方执行后 mine() 记录我方动作。
     金额均为“本街累计下注到 X”。新手牌（手牌变化）时重置。"""
-    def __init__(self): self.reset(None)
+    def __init__(self):
+        self.np, self.seats = 2, {}       # 桌上人数 / 座位 位置->昵称（多人桌由识别填；reset 不清，换桌才变）
+        self.reset(None)
 
     def reset(self, hero):
         self.hero, self.pos, self.street, self.ev, self.level = hero, None, None, [], 1

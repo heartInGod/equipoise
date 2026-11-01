@@ -626,7 +626,7 @@ class TestModelEval(unittest.TestCase):
         self.assertEqual(len({c["id"] for c in E.CASES}), len(E.CASES))
         for c in E.CASES:
             st, h = E.build(c); n, b = st["nums"], st["buttons"]
-            self.assertEqual(n["pot"], n["pot_prev"] + n["opp_bet"] + n["my_bet"], c["id"])
+            self.assertEqual(n["pot"], n["pot_prev"] + n.get("street_bets", n["opp_bet"] + n["my_bet"]), c["id"])
             for a in c["ok"] + c["bad"]:
                 legal = {"弃牌": True, "让牌": not n["to_call"], "跟注": bool(n["to_call"]),
                          "下注": bool(st["board"]) and not n["to_call"], "加注": bool(E.S.usable_presets(st)) and (not st["board"] or bool(n["to_call"])),
@@ -880,11 +880,150 @@ class TestSession(unittest.TestCase):
         s = self.sess.static
         for k in ("单挑统计参考值", "60–75%", "SPR（代码", "下注尺度速查", "Solver 通用结论"):
             self.assertIn(k, s)
-        self.assertNotIn("UTG", s); self.assertNotIn("多人底池", s); self.assertNotIn("### 8.1", s)   # 不带 6max 内容、不重复标题
+        for k in ("UTG", "多人底池", "行动线冲突与封顶", "被动型对手不例外", "随机数 R", "抓诈：由你权衡"):   # 2~8 人通用：6max 参考 + 冲突/频率规则
+            self.assertIn(k, s)
+        self.assertNotIn("### 8.1", s); self.assertNotIn("果断弃", s); self.assertNotIn("基本是坚果", s)   # 不重复标题；被动型不再写成绝对
         st = {"hero": ["Ah", "Kd"], "board": ["2c", "7d", "Qs"], "buttons": ["弃牌", "跟注"], "presets": [],
               "nums": {"pot": 40, "to_call": 20, "my_stack": 380, "opp_stack": 360, "my_bet": 0, "opp_bet": 20}}
         self.assertIn("SPR 9.0", self.P.snapshot_bb(st, []))                # min(380,360)/40
         st.update(board=[]); self.assertFalse(any(l.startswith("SPR") for l in self.P.snapshot_bb(st, [])))   # 翻前不给
+
+
+class TestMultiTable(unittest.TestCase):
+    """2~8 人桌：位置/行动线/身后未行动/范围表/多人统计/流水/对手库展开/session prompt/mix+R"""
+    EV = [["翻前", "CO 加注到 5"], ["翻前", "BTN 跟注"], ["翻前", "SB 弃牌"], ["翻前", "我方跟注到 5"],
+          ["翻牌", "我方让牌"], ["翻牌", "CO 下注 5"], ["翻牌", "BTN 加注到 15"]]
+    SEATS = {"UTG": "a", "HJ": "b", "CO": "c", "BTN": "d", "SB": "e"}
+
+    def setUp(self):
+        import table as T, session_prompt as P
+        self.T, self.P = T, P
+
+    def w(self, ev, pos="BB", n=6):
+        return self.T.walk_full([tuple(x) for x in ev], pos, n)
+
+    def test_positions_and_baseline(self):
+        T = self.T
+        self.assertEqual(T.positions(2), ["BTN", "BB"])
+        self.assertEqual(T.positions(3), ["BTN", "SB", "BB"])
+        self.assertEqual(T.positions(6), ["UTG", "HJ", "CO", "BTN", "SB", "BB"])
+        self.assertEqual(T.positions(8), ["UTG", "UTG+1", "MP", "HJ", "CO", "BTN", "SB", "BB"])
+        self.assertEqual(T.post_order(6), ["SB", "BB", "UTG", "HJ", "CO", "BTN"])
+        r6 = [T.rfi(p, 6) for p in ("UTG", "HJ", "CO", "BTN")]
+        self.assertEqual(r6, sorted(r6)); self.assertLess(T.rfi("UTG", 8), T.rfi("UTG", 6))    # 越靠前越紧，人越多越紧
+        self.assertEqual(T.rfi("BTN", 2), T.HU_RFI)
+        self.assertGreater(T.defend_base("BB", "BTN", 6), T.defend_base("BB", "UTG", 6))
+
+    def test_walk_active_and_to_act(self):
+        T, w = self.T, self.w(self.EV)
+        self.assertEqual(set(w["active"]), {"CO", "BTN", "me"})                 # UTG/HJ 没动作 = 弃牌，SB 弃牌
+        self.assertEqual(T.to_act(w, "BB", 6, "翻牌"), ["CO"])                  # CO 下注后被 BTN 加注，还要再表态
+        self.assertEqual(T.to_act(self.w([["翻前", "CO 加注到 5"]], "BTN"), "BTN", 6, "翻前"), ["SB", "BB"])
+        self.assertEqual(T.to_act(self.w([], "UTG"), "UTG", 6, "翻前"), ["HJ", "CO", "BTN", "SB", "BB"])
+
+    def test_preflop_ranges(self):
+        T = self.T
+        r = T.preflop_ranges(self.w(self.EV[:4]), 6)
+        self.assertEqual(r["CO"]["label"], "开局加注"); self.assertEqual(r["CO"]["x"], T.rfi("CO", 6))
+        self.assertIn("冷跟", r["BTN"]["label"]); self.assertGreater(r["BTN"]["excl"], 0)              # 冷跟封顶
+        self.assertNotIn("SB", r)
+        loose = {"rfi_co": 14, "rfi_co_opp": 15}
+        self.assertGreater(T.preflop_ranges(self.w(self.EV[:1], "BTN"), 6, lambda k: loose)["CO"]["x"], r["CO"]["x"])   # 统计收缩
+        sq = T.preflop_ranges(self.w([["翻前", "CO 加注到 5"], ["翻前", "BTN 跟注"], ["翻前", "SB 加注到 22"]]), 6)
+        self.assertIn("squeeze", sq["SB"]["label"])
+        self.assertIn("对2个随机对手", "".join(self.P.snapshot_bb(
+            {"hero": ["Ah", "Ad"], "board": [], "buttons": {}, "nums": {}}, None, {"k": 2})))
+
+    def test_multi_opp_stats(self):
+        P = self.P
+        rec = {"pos": "BB", "np": 6, "ev": self.EV[:4], "board": []}
+        st = lambda p: P.opp_stats([dict(rec, opp_pos=p)])
+        self.assertEqual((st("CO")["rfi_co_opp"], st("CO")["rfi_co"], st("CO")["pfr"]), (1, 1, 1))
+        self.assertEqual((st("BTN")["m3_opp"], st("BTN")["mc"], st("BTN")["m3"]), (1, 1, 0))
+        self.assertEqual((st("UTG")["rfi_ep_opp"], st("UTG")["rfi_ep"], st("UTG")["vp_n"]), (1, 0, 1))   # 隐式弃牌也算开池机会
+        self.assertEqual(P.opp_stats([rec])["n"], 0)                                   # 多人手没有 opp_pos 不计
+        self.assertTrue(all(st(p)["net"] == 0 and st(p)["won"] == 0 for p in ("CO", "BTN")))   # 盈亏不归属
+
+    def test_hand_detail_and_oppdb_expand(self):
+        import oppdb
+        rec = {"hid": "x-0001", "t": "2026-11-01 10:00:00", "pos": "BB", "np": 6, "seats": self.SEATS, "ev": self.EV,
+               "board": ["Jh", "Th", "4c"], "hero": ["9s", "9d"], "how": "我方弃牌", "delta": -5, "opp": None}
+        d = self.P.hand_detail(rec)
+        self.assertEqual((d["np"], d["seats"]), (6, self.SEATS))
+        self.assertEqual([(a["pos"], a["act"]) for a in d["acts"][:4]], [("CO", "raise"), ("BTN", "call"), ("SB", "fold"), ("BB", "call")])
+        db = oppdb.OppDB(Path(tempfile.mkdtemp()) / "o.db")
+        try:
+            self.assertEqual(db.add_hands([rec]), 5)                                      # 5 个入座对手各一份
+            self.assertEqual(db.lookup("c")["stats"]["rfi_co"], 1)
+            self.assertEqual(db.lookup("d")["stats"]["mc"], 1)
+        finally: db.close()
+
+    def test_session_multi_prompt(self):
+        P = self.P
+        sess = P.HandSession(None, None, hands_log=Path(tempfile.mkdtemp()) / "h.jsonl", log=lambda m: None)
+        sess.add_opp("c", dict(dict.fromkeys(P.STAT_KEYS, 0), n=50, vp_n=50, vp=40, pfr=30, rfi_co_opp=10, rfi_co=9, mw_n=50))
+        sess.fixed_r = 7
+        h = S.HandHist(); h.np, h.seats = 6, dict(self.SEATS)
+        h.hero, h.pos, h.ev, h.street = ("9s", "9d"), "BB", [tuple(x) for x in self.EV], "翻牌"
+        st = {"hero": ["9s", "9d"], "board": ["Jh", "Th", "4c"], "buttons": {"弃牌": 1, "跟注": 1}, "presets": [],
+              "nums": {"pot": 56, "to_call": 30, "my_stack": 195, "my_bet": 0, "opp_bet": 30, "opp_stack": 165,
+                       "stacks": {"CO": 185, "BTN": 165}}}
+        req, user = sess.build(st, h)
+        for k in ("6人桌", "CO[c]", "BTN[d]", "对手翻前范围表", "身后未行动 CO", "累计50手", "多人桌50手"):
+            self.assertIn(k, user)
+        self.assertNotIn("R=", user); self.assertEqual(sess.last_r, 7)                   # R 由代码抽、不给模型看
+        self.assertNotIn("UTG[a]", user.split("起始筹码")[1].split("\n")[0])            # 起始筹码只列在局的
+        self.assertIn("### CO[c]", req["system"][1]["text"])
+        h2 = S.HandHist(); h2.np, h2.seats = 6, dict(self.SEATS); h2.hero, h2.pos = ("Ah", "Kd"), "BB"
+        sess.build(dict(st, hero=["Ah", "Kd"], board=[]), h2); sess.flush()
+        rec = sess.hands[-1]
+        self.assertEqual((rec["np"], rec["opp"]), (6, None))
+        self.assertEqual(sess.opp_S("c")[1], 1)                                          # 本局多人手并入该对手统计
+
+    def test_mix_pick(self):
+        p = C.mix_pick
+        self.assertEqual(p("跟注60 弃牌40", 59), ("跟注", None)); self.assertEqual(p("跟注60 弃牌40", 60), ("弃牌", None))
+        self.assertEqual(p("弃牌100，R=55→跟注", 99), ("弃牌", None)); self.assertIsNone(p(None, 3)); self.assertIsNone(p("看情况", 3))
+        self.assertEqual(C.mix_parse("下注1/2 70 让牌30"), [("下注", "1/2", 70.0), ("让牌", None, 30.0)])   # 档位里的分数不是频率
+        self.assertEqual(p("下注1/2池70 让牌30", 69), ("下注", "1/2池")); self.assertEqual(p("下注75% 让牌25%", 75), ("让牌", None))
+        self.assertEqual(p("跟注3 弃牌1", 74), ("跟注", None)); self.assertEqual(p("跟注3 弃牌1", 75), ("弃牌", None))  # 频率和≠100 按比例
+        d = C.apply_mix({"mix": "弃牌80 跟注20", "act": "跟注", "size": None}, 8, 5)        # 模型算反区间 -> 代码纠正
+        self.assertEqual((d["act"], d["act_model"], d["r"]), ("弃牌", "跟注", 8))
+        d = C.apply_mix({"mix": "下注1/2 30 让牌70", "act": "让牌", "size": None}, 10, 0)
+        self.assertEqual((d["act"], d["size"]), ("下注", "1/2"))
+        d = C.apply_mix({"mix": "下注30 让牌70", "act": "让牌", "size": None}, 10, 0)
+        self.assertEqual((d["act"], d["size"]), ("下注", None))                          # 没写档位 -> execute 取中间档
+        self.assertEqual(C.apply_mix({"mix": "弃牌60 让牌40", "act": "弃牌"}, 10, 0)["act"], "让牌")   # 能免费看牌不弃
+        self.assertEqual(C.apply_mix({"act": "跟注"}, 10, 5), {"act": "跟注"})                         # 无 mix -> 原样
+        self.assertEqual(C.apply_mix({"mix": "跟注100", "act": "跟注"}, None, 5), {"mix": "跟注100", "act": "跟注"})
+
+    def test_decide_applies_mix(self):
+        sess = self.P.HandSession(None, None, hands_log=Path(tempfile.mkdtemp()) / "h.jsonl", log=lambda m: None)
+        sess.fixed_r = 8
+        class D:
+            def ask(self, req, deadline): return {"mix": "弃牌80 跟注20", "act": "跟注", "size": None, "why": "x"}, {}
+        b = C.Bot(C.RecIO(), decider=D(), prompt="session", session=sess, replay=True)
+        h = S.HandHist(); h.np, h.seats = 6, dict(self.SEATS)
+        h.hero, h.pos, h.ev, h.street = ("9s", "9d"), "BB", [tuple(x) for x in self.EV], "翻牌"
+        b.hist = h
+        st = {"hero": ["9s", "9d"], "board": ["Jh", "Th", "4c"], "buttons": {"弃牌": 1, "跟注": 1}, "presets": [],
+              "nums": {"pot": 56, "to_call": 30, "my_stack": 195, "my_bet": 0, "opp_bet": 30, "opp_stack": 165}}
+        dec, info, _ = b.decide(st, time.time())
+        self.assertEqual((dec["act"], dec["act_model"]), ("弃牌", "跟注")); self.assertEqual(info["mix_override"], "跟注->弃牌(R=8)")
+        self.assertEqual(json.loads(sess.msgs[-1]["content"])["act"], "弃牌")                # 会话历史记的是实际执行的动作
+
+    def test_grade_mix(self):
+        import model_eval as E
+        get = lambda i: next(c for c in E.CASES if c["id"] == i)
+        c = get("exploit_maniac_bluffcatch"); st, _ = E.build(c)
+        self.assertEqual(E.grade_mix(c, st, {"mix": "跟注70 弃牌30"}), ("对", 70))
+        self.assertEqual(E.grade_mix(c, st, {"mix": "跟注40 弃牌60"})[0], "错")
+        self.assertEqual(E.grade_mix(c, st, {"act": "跟注"}), (None, None))
+        c = get("river_nutflush_value"); st, _ = E.build(c)
+        self.assertEqual(E.grade_mix(c, st, {"mix": "下注1/3 80 让牌20"})[0], "尺度偏")
+        self.assertEqual(E.grade_mix(c, st, {"mix": "下注1 80 让牌20"})[0], "对")
+        self.assertEqual(E.grade_mix(c, st, {"mix": "弃牌100"})[0], "错")               # 能免费让牌时“弃牌”按让牌执行（不在 ok）
+        self.assertEqual(E.case_r(c), E.case_r(c)); self.assertEqual(E.case_r(get("freq_river_missed_fd_r95")), 95)
 
 
 class TestOppDB(unittest.TestCase):

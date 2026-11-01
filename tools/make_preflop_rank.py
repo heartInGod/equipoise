@@ -1,6 +1,7 @@
 """离线生成 169 种起手牌的单挑胜率（对随机手牌）与排名百分位 -> tools/preflop_rank.json
 用法: python3 tools/make_preflop_rank.py [N=4000]   （纯标准库，约 1~2 分钟）
-      python3 tools/make_preflop_rank.py --vs [N=1500]   补每手对前 5/10/20/35/50% 范围的胜率（vs 字段，约 5 分钟）"""
+      python3 tools/make_preflop_rank.py --vs [N=1500]   补每手对前 5/10/20/35/50% 范围的胜率（vs 字段，约 5 分钟）
+      python3 tools/make_preflop_rank.py --mw [N=3000]   补每手对 2~7 个随机对手的胜率（mw 字段，键 "2".."7"，8 进程约 3~4 分钟）"""
 import itertools, json, random, sys
 from collections import Counter
 from pathlib import Path
@@ -102,8 +103,47 @@ def main_vs(n):
     p.write_text(json.dumps(tab, ensure_ascii=False, indent=0))
 
 
+MW_KS = (2, 3, 4, 5, 6, 7)        # 多人桌：对 k 个随机对手（k=1 就是 eq）
+
+
+def _mw_one(args):
+    """一种起手牌对 k 个随机对手的胜率（平分按人数分摊；种子按牌名固定）"""
+    name, h, n = args
+    rng, out = random.Random("mw" + name), {}
+    rest = [c for c in range(52) if c not in h]
+    for k in MW_KS:
+        w = 0.0
+        for _ in range(n):
+            s = rng.sample(rest, 5 + 2 * k)
+            board = s[:5]
+            a = best7(list(h) + board)
+            best, ties = a, 1
+            for i in range(k):
+                b = best7(s[5 + 2 * i:7 + 2 * i] + board)
+                if b > best: best, ties = b, 0; break
+                if b == best: ties += 1
+            if best == a and ties: w += 1 / ties
+        out[str(k)] = round(w / n * 100, 1)
+    return name, out
+
+
+def main_mw(n):
+    """在已有 preflop_rank.json 上补 mw 字段：{"2": 对 2 个随机对手的胜率, ..., "7": ...}（不改其他字段）"""
+    from multiprocessing import Pool
+    p = Path(__file__).with_name("preflop_rank.json")
+    tab = json.loads(p.read_text())
+    with Pool() as pool:
+        for name, mw in pool.imap_unordered(_mw_one, [(name, h, n) for name, h in hands169()]):
+            tab[name]["mw"] = mw
+            print(name, mw, file=sys.stderr, flush=True)
+    p.write_text(json.dumps(tab, ensure_ascii=False, indent=0))
+
+
 if __name__ == "__main__":
-    if "--vs" in sys.argv:
+    if "--mw" in sys.argv:
+        a = [x for x in sys.argv[1:] if x != "--mw"]
+        main_mw(int(a[0]) if a else 1500)
+    elif "--vs" in sys.argv:
         a = [x for x in sys.argv[1:] if x != "--vs"]
         main_vs(int(a[0]) if a else 1500)
     else:

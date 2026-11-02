@@ -10,7 +10,7 @@ import logroll
 
 ap = argparse.ArgumentParser()
 ap.add_argument("t0"); ap.add_argument("t1")
-ap.add_argument("--model", default="mafia-anthropic/claude-opus-5"); ap.add_argument("--show", action="store_true")
+ap.add_argument("--model", default="mafia-anthropic/claude-opus-5-5"); ap.add_argument("--show", action="store_true")
 ap.add_argument("--prompt", choices=["short"], default="short")
 ap.add_argument("--log", help="默认取 logs/ 下最近一天的 text__<model>.jsonl")
 a = ap.parse_args()

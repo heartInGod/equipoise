@@ -383,7 +383,7 @@ def main(argv):
     if cmd == "check":
         sys.path.insert(0, str(TOOLS.parent))
         import bot_core as C
-        ref = argv[argv.index("--model") + 1] if "--model" in argv else "mafia-anthropic/claude-opus-5"
+        ref = argv[argv.index("--model") + 1] if "--model" in argv else "mafia-anthropic/claude-opus-5-5"
         t0 = time.time()
         diff, ans = model_check(argv[1], fx["toks"], tb, C.make_model(ref))
         print(f"模型 {ref} {time.time() - t0:.1f}s: {json.dumps(ans, ensure_ascii=False)}")

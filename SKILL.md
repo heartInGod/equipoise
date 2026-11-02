@@ -121,7 +121,7 @@ GTO 基线：<无对手信息时怎么打，一句话>
 python3 poker_bot.py list                                   # 列出可用模型
 python3 tools/state.py                                      # 现场截图并打印识别结果（不调模型）
 python3 poker_bot.py tprobe --model <provider/model> --img model_test/state1.raw   # 单帧测试文本模式
-python3 poker_bot.py tlive --model <provider/model> --max-sec 600 [--dry] [--budget 8 --hedge 4.5] [--preflop-rule] [--no-trash-fold] [--prompt session|short] [--capture stream|screencap]   # 主模式（默认 --capture stream：视频流截图，帧间隔约 0.2s；vstream 未编译自动退回 screencap ~0.95s/帧；默认 --prompt session + 默认桌；翻前默认也问模型（3bet/4bet/按画像调整/mix 混合由模型做），只有“无人入池、我方非大盲、非同花非对子、排名在该位置开池基线+25%（封顶 90%）之外”的明确垃圾牌由 `trash_fold_dec` 直接弃（`--no-trash-fold` 关闭）；`--preflop-rule` 让翻前全部走本地规则（单挑写的，多人桌开池范围不对，只作降延迟备用））
+python3 poker_bot.py tlive --model <provider/model（推荐 mafia-anthropic/claude-opus-5-5）> --max-sec 600 [--dry] [--budget 8 --hedge 4.5] [--preflop-rule] [--no-trash-fold] [--prompt session|short] [--capture stream|screencap]   # 主模式（默认 --capture stream：视频流截图，帧间隔约 0.2s；vstream 未编译自动退回 screencap ~0.95s/帧；默认 --prompt session + 默认桌；翻前默认也问模型（3bet/4bet/按画像调整/mix 混合由模型做），只有“无人入池、我方非大盲、非同花非对子、排名在该位置开池基线+25%（封顶 90%）之外”的明确垃圾牌由 `trash_fold_dec` 直接弃（`--no-trash-fold` 关闭）；`--preflop-rule` 让翻前全部走本地规则（单挑写的，多人桌开池范围不对，只作降延迟备用））
 python3 poker_bot.py tlive --model <m> --replay model_test/live --t0 001000 --t1 002000 [--rule]   # 离线回放，不连手机（--rule 不调模型）
 tail -f logs/$(date +%F)/ops.log                           # 实时看机器人操作 + 异常（跨零点后换新文件，需重开）
 tail -f logs/$(date +%F)/ops.log | grep -v --line-buffered " INFO  \["   # 只看 WARN/ERROR（traceback 行无级别，会保留）
@@ -135,7 +135,7 @@ python3 tools/players.py list | show <opp> | hands <opp> [--table X] | hand <hid
 - **优先用文本模式 `tlive`**（本地识别 + 模型只做决策）。`probe/live` 是早期直接把图片丢给模型的模式，慢且不稳定。
 - 决策 prompt 默认 `--prompt session`（评测 99% vs short 95%）；`--prompt short` 是备用单帧 prompt：`bot_core.py` 的 `TPROMPT`（约 600 字，状态由 `tools/state.py` 的 `brief_text()` 生成），用于单帧调试、非 Anthropic 模型兜底、session 出问题时对照（旧 long 模式已删除）；`tlive [--prompt session] --table tables/<桌> [--opp <昵称初值,可选>] [--profile-every 10] [--warm/--no-warm]` 用开局长 system + 画像（跨桌热启动，见 §4） + 每次一条本手完整记录（真机模式把每手写进本桌 `tables/<桌>/hands.jsonl`、模型对话写本桌 `msgs.jsonl`（按 hid 关联），每 N 手异步更新本桌画像 `tables/<桌>/<opp>.md`，旧画像备份为 `.md.bak`；回放模式只写 `logs/<日期>/hands__*.jsonl` + `msgs__*.jsonl`，不写库、不改画像），`to_text()` 仍用于人工查看（`tools/state.py`、`act.py look`）。改策略改 `TPROMPT`，改识别改 `state.py`，改流程改 `Bot.handle`；改完跑 `tests/test_scenarios.py`，识别有意改动用 `tests/make_golden.py --check` 看差异再刷新。
 - 手机需插 USB 常亮（`adb shell svc power stayon usb`），否则息屏后机器人对着 AOD 黑屏空转（2026-10-30 23:10 出现过）。
-- 延迟链路：截图（默认 StreamGrabber 视频流，取帧即最新画面；`--capture screencap` 用 Grabber 后台连续 screencap）→ parse(0.2s) → 模型（长连接；4.5s 未返回发对冲请求（`--hedge`，默认 4.5；opus-5 中位约 3.6s，原 3.0 时几乎每次对冲、请求量翻倍却从没更快）；截图后 `--budget` 8s 仍无结果用 `rule_decide`）→ 常驻 adb shell 发点击（不阻塞）。点击后开始于 busy_until+0.25s 之前的帧丢弃。
+- 延迟链路：截图（默认 StreamGrabber 视频流，取帧即最新画面；`--capture screencap` 用 Grabber 后台连续 screencap）→ parse(0.2s) → 模型（长连接；4.5s 未返回发对冲请求（`--hedge`，默认 4.5；opus-5 中位约 3.6s、opus-5-5 评测中位 4.3s / P90 7.7s（不支持 thinking.disabled，AnthropicKA 自动改 adaptive+effort low），原 3.0 时几乎每次对冲、请求量翻倍却从没更快）；截图后 `--budget` 8s 仍无结果用 `rule_decide`）→ 常驻 adb shell 发点击（不阻塞）。点击后开始于 busy_until+0.25s 之前的帧丢弃。
 - 识别出的画面类型：`my_turn`、`anim`、`runit`（全下后选发一次/两次）、`profile`、`away`、`can_start`、`need_sit`、`waiting`、`other`。
 - 无法处理的界面会存到 `model_test/unknown/` 并写入 `logs/<YYYY-MM-DD>/unknown.jsonl`，优化识别时先看这里。
 - 多人桌（入座 ≥3）：每帧（含非我方回合）都 `hist.observe` 还原行动线，跳过单挑的 `see_opp`；tlive 默认 `--seat-check`（`--no-seat-check` 关闭）用决策模型在后台校验座位布局，回放不调用。换了桌型/界面先 `seats.py show` 看归座，锚点落在布局外（`misfit`）就用该桌录像 `seats.py derive --save` 重推布局，再 `check --model` 确认。
@@ -152,7 +152,7 @@ python3 tools/players.py list | show <opp> | hands <opp> [--table X] | hand <hid
 1. `python3 tools/analyze_session.py [logs/<YYYY-MM-DD>/text__<model>.jsonl]`（不带参数取最近一天）：错误率、超时率、耗时、bb/100。
 2. 改了 prompt 或识别后：`python3 tools/replay_hand.py <HH:MM:SS> <HH:MM:SS> --model <m>` 重放某手，或 `tlive --replay` 批量回放，再用 `tools/replay_summary.py logs/<YYYY-MM-DD>/replay__<时间>.jsonl` 看新旧决策差异。
 3. 决策质量评测（换模型、改 prompt/`SYS_STATIC`/`brief_text` 前后都跑一遍对比）：`python3 tools/model_eval.py --model <m> --prompt short|session [-n 2]`（short 38 个 / session 60 个局面，约 1~2 分钟；session 判分看 mix 频率，另列代码按 R 改写 act 的明细；`--explain` 逐例打印范围推演和理论依据，约 5 分钟，复盘推理质量用；`--model rule` 规则基线；`--cat 翻前`/`--case id1,id2` 只跑部分；`--show <id>` 看发给模型的 prompt；`--list` 列用例）。新增用例写进 `tools/model_cases.py`，只收答案明确的局面（混合策略局面把几种动作都放进 ok，并用 `r=` 固定 R 成对出题看执行是否跟着 R 走），跑一次 `--model rule` 和 `TestModelEval`（检查正确动作在该局面可执行）。复盘发现模型在真实局面犯错时，把那个局面抽象成用例加进去。
-   - 大样本：`python3 tools/model_eval.py --set pluribus --model <m> [--limit 200] [-j 2]`（1000 例，opus 并发 2 约 25 分钟；rule 基线吻合率 69.5%、严重 0.1%）。重新生成：先下载牌谱到 /tmp/plb（命令见 make_pluribus_cases.py 文档），`python3 tools/make_pluribus_cases.py`（约 1.5 分钟，固定 seed 可复现）。
+   - 大样本：`python3 tools/model_eval.py --set pluribus --model <m> [--limit 200] [-j 2]`（1000 例，opus 并发 2 约 25 分钟；2026-11-02 结果：gpt-6.1-sol 78.7%（中位 8.2s）、opus-5-5 76.1%（中位 4.3s，翻后下注基线 prompt 后）、opus-5 68.0%、rule 69.5%，严重错误均 ≤0.2%；评测中途断网会出现 gaierror 无效，用 `--case <无效id>` 补跑，汇总时同 id 取最后一条）。重新生成：先下载牌谱到 /tmp/plb（命令见 make_pluribus_cases.py 文档），`python3 tools/make_pluribus_cases.py`（约 1.5 分钟，固定 seed 可复现）。
 4. 查某一手：`players.py hand <hid>`（逐动作明细 + 当时的模型对话）；回放产生的手需要入库时按工作流 C 用 `players.py import --table` 导入；有摊牌信息时手工补进本桌画像 §5。
 
 ---

@@ -22,7 +22,7 @@ description: 德州扑克（无限注 NLH）职业牌手助手 + WePoker 真机�
 | `tools/table.py` | **2~8 人桌通用牌桌模型**（session/评测/统计共用）：`positions(n)`（8 人 UTG,UTG+1,MP,HJ,CO,BTN,SB,BB；6 人 UTG,HJ,CO,BTN,SB,BB；单挑 BTN,BB）、`post_order`、`rfi(pos,n)` 按身后人数给开池基线；`walk_full(ev,hero_pos,n)` 解析行动线（多人对手写位置前缀 `翻前 CO 加注到 5`，单挑仍写“对手”；翻前没动作且行动已轮过的人视为弃牌；n=2 与旧 `walk` 完全一致）→ steps/prior/c/base/acts/active/folded；`to_act` 身后还要表态的人；`preflop_ranges` 按人数×位置基线 + 对手统计收缩（`shrink`，k=20）给每个对手的翻前范围（开局/开局大注收紧/3bet/squeeze/4bet/limp/大盲跟注·冷跟封顶/跟 3bet…）；`hero_baseline` 我方位置基线；`vs_eq` 对前 X% 范围胜率插值、`mw_eq` 对 k 个随机对手胜率 | 改多人桌基线/范围表/行动线解析 |
 | `tables/README.md` | 桌目录约定、`hands.jsonl` 字段、每手数据流、画像优先级 | 读写对局数据前 |
 | `tables/_template/` | `table.md`（桌信息模板）、`_user_template.md`（对手画像模板，`ProfileUpdater` 按它生成） | 开新桌（`bot_core.new_table()` 自动复制 `table.md`） |
-| `tables/<table_id>/` | **每张桌一个目录**：`table.md` 桌信息（session prompt 读前言 bullet：平台/级别/单位/Hero 昵称）、`hands.jsonl` **本桌对局流水**（只追加，每手一行 `session_prompt.hand_detail`：`hid`=`<运行开始时间>-<4位随机>-<手序号>`（导入的为 `imp-<来源>-<序号>`）、`t`/`n`/`opp`（未识别为 null，不计入库）/`pos`/`hero`/`board`/`ev` 原始行动线（筹码）/`how`/`delta`/`table`/`start_bb`、`acts` 逐动作（街/谁/位置/类型/投入/本街累计到/动作前底池/剩余，BB）、`msgs`=对话文件路径）、`msgs.jsonl` **本桌模型对话**（每行 `{hid,t,opp,msgs}`，不进 git，与流水按 `hid` 双向关联）、`<opp>.md` **该对手在本桌的画像**（同一人不同桌可不同；`ProfileUpdater` 每 N 手更新，旧版备份 `.md.bak`） | 读写对局数据/查某一手 |
+| `tables/<table_id>/` | **每张桌一个目录**：`table.md` 桌信息（session prompt「## 牌桌」只读平台/游戏/级别/金额单位/Hero 行，桌型不读；人数行按每手实际人数生成（2 人写单挑+当前对手，多人写 N 人桌），人数变化才重建 static）、`hands.jsonl` **本桌对局流水**（只追加，每手一行 `session_prompt.hand_detail`：`hid`=`<运行开始时间>-<4位随机>-<手序号>`（导入的为 `imp-<来源>-<序号>`）、`t`/`n`/`opp`（未识别为 null，不计入库）/`pos`/`hero`/`board`/`ev` 原始行动线（筹码）/`how`/`delta`/`table`/`start_bb`、`acts` 逐动作（街/谁/位置/类型/投入/本街累计到/动作前底池/剩余，BB）、`msgs`=对话文件路径）、`msgs.jsonl` **本桌模型对话**（每行 `{hid,t,opp,msgs}`，不进 git，与流水按 `hid` 双向关联）、`<opp>.md` **该对手在本桌的画像**（同一人不同桌可不同；`ProfileUpdater` 每 N 手更新，旧版备份 `.md.bak`） | 读写对局数据/查某一手 |
 | `poker_bot.py` | 命令行入口（list / tprobe / tlive）、模型配置读取 `load_providers`、通用 `call_model` | 跑机器人 |
 | `bot_core.py` | 机器人核心：`TPROMPT`、`Bot.handle`（每帧状态机）、`execute` 动作映射、`rule_decide` 本地规则兜底、`Decider`（对冲请求+deadline）、`AnthropicKA` 长连接池、`Grabber` 后台截图、`AdbIO` 常驻 adb shell、`AsyncWriter` | 改策略/流程/延迟 |
 | `tests/test_scenarios.py` | 场景测试（136 例，约 51s，不连手机不调模型）；场景清单 `tests/SCENARIOS.md`；golden 生成 `tests/make_golden.py` | 改代码后必跑 |
@@ -69,7 +69,7 @@ description: 德州扑克（无限注 NLH）职业牌手助手 + WePoker 真机�
 
 1. 定 `table_id`：`YYYYMMDD_<平台/级别>_<标识>`，例如 `20261030_wepoker_practice`。
 2. 建目录：`tlive --prompt session --table tables/<table_id>` 启动时会自动从 `_template/table.md` 建（不传 `--table` 时用 `poker_bot.py` 的默认桌 `tables/20261029_wepoker_practice`；传 `--table ''` 时自动建 `tables/YYYYMMDD_auto`）；手工开桌就 `mkdir tables/<table_id> && cp tables/_template/table.md tables/<table_id>/`。
-3. 填 `table.md`：平台、盲注、桌型、**金额单位**（WePoker 为筹码，1BB = 2 筹码）、Hero 昵称和座位、座位表。
+3. 填 `table.md`：平台、盲注、桌型（仅备忘，prompt 按实际人数）、**金额单位**（WePoker 为筹码，1BB = 2 筹码）、Hero 昵称和座位、座位表。
 4. 不用预建对手画像：`hands.jsonl`、`msgs.jsonl`、`<opp>.md` 都由机器人运行时写入；本桌没有画像时 prompt 自动用该对手在其他桌最近一份画像（标注“仅作先验”）。
 
 ### C. 补录手牌 + 更新本桌画像

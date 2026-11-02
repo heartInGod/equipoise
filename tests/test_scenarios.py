@@ -1002,6 +1002,9 @@ class TestMultiTable(unittest.TestCase):
               "nums": {"pot": 56, "to_call": 30, "my_stack": 195, "my_bet": 0, "opp_bet": 30, "opp_stack": 165,
                        "stacks": {"CO": 185, "BTN": 165}}}
         req, user = sess.build(st, h)
+        tb = sess.static.split("## 牌桌")[1].split("## ")[0]
+        self.assertIn("本手 6 人桌（多人桌）", tb); self.assertNotIn("单挑", tb)       # 「## 牌桌」按实际人数生成
+        s0 = sess.static
         for k in ("6人桌", "CO[c]", "BTN[d]", "对手翻前范围表", "身后未行动 CO", "累计50手", "多人桌50手"):
             self.assertIn(k, user)
         self.assertNotIn("R=", user); self.assertEqual(sess.last_r, 7)                   # R 由代码抽、不给模型看
@@ -1011,9 +1014,13 @@ class TestMultiTable(unittest.TestCase):
         h2 = S.HandHist(); h2.np, h2.seats = 6, dict(self.SEATS); h2.hero, h2.pos = ("Ah", "Kd"), "BB"
         _, u2 = sess.build(dict(st, hero=["Ah", "Kd"], board=[]), h2); sess.flush()
         self.assertIn("翻后行动顺序（在局者，含尚未表态的）：", u2)
+        self.assertIs(sess.static, s0)                                                   # 人数没变不重建 system（缓存照常命中）
         rec = sess.hands[-1]
         self.assertEqual((rec["np"], rec["opp"]), (6, None))
         self.assertEqual(sess.opp_S("c")[1], 1)                                          # 本局多人手并入该对手统计
+        h3 = S.HandHist(); h3.hero, h3.pos = ("Ah", "Kd"), "BTN"
+        sess.build(dict(st, hero=["Ah", "Kd"], board=[]), h3)
+        self.assertIn("本手 2 人（单挑）", sess.static)                                    # 换成单挑：重建
 
     def test_post_order_line(self):
         f = self.P.post_order_line

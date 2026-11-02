@@ -159,12 +159,15 @@ def _reference():
     return "\n\n## 参考资料（来自 gto.md / technology.md）\n" + body if body else ""
 
 
-def _table_brief(table_dir):
-    """table.md 里的前言 bullet（平台、级别、单位、Hero 昵称）"""
-    if not table_dir or not (Path(table_dir) / "table.md").exists():
-        return "- WePoker 练习局，盲注 1/2（筹码），单挑。"
-    L = [l for l in (Path(table_dir) / "table.md").read_text().splitlines() if l.startswith("- ") and "：" in l]
-    return "\n".join(l for l in L if re.match(r"- (平台|游戏|级别|金额单位|Hero)", l)) or "- WePoker 练习局，盲注 1/2（筹码），单挑。"
+def _table_brief(table_dir, np_=None):
+    """「## 牌桌」：table.md 里的前言 bullet（平台、游戏、级别、单位、Hero 昵称；不读桌型）+ 本手实际人数 np_（代码识别，None=还没开手）"""
+    base = "- WePoker 练习局，盲注 1/2（筹码）。"
+    if table_dir and (Path(table_dir) / "table.md").exists():
+        L = [l for l in (Path(table_dir) / "table.md").read_text().splitlines() if l.startswith("- ") and "：" in l]
+        base = "\n".join(l for l in L if re.match(r"- (平台|游戏|级别|金额单位|Hero)", l)) or base
+    seats = ("- 人数：本手 2 人（单挑）。" if np_ == 2 else f"- 人数：本手 {np_} 人桌（多人桌）。" if np_
+             else "- 人数：以每手消息里的「N人桌」为准（2 人为单挑）。")
+    return base + "\n" + seats
 
 
 ROOT = Path(__file__).resolve().parent
@@ -688,6 +691,7 @@ class HandSession:
         self._votes, self._pending, self._loading, self._thread = [], None, None, None
         self._unwritten = []                 # 对手还没识别出来时结束的手，识别后补上昵称再写
         self._wq, self._writer, self._prof_new = queue.Queue(), None, None   # 每手记录的后台写线程（jsonl/对手库/画像回调都不在主线程）
+        self.np = None                       # 「## 牌桌」里写的人数；开手时人数变了才重建 static（不变时缓存照常命中）
         self._static()
         self.hands_log, self.on_hand_end = hands_log, on_hand_end
         if opp and warm and history is None and hist_stats is None: self._start_load(opp)
@@ -703,7 +707,7 @@ class HandSession:
 
     def _static(self):
         self.static = SYS_STATIC.format(exploit=_exploit_table(), reference=_reference(),
-                                        table=_table_brief(self.table_dir) + (f"\n- 当前对手：{self.opp}" if self.opp else ""),
+                                        table=_table_brief(self.table_dir, self.np) + (f"\n- 当前对手：{self.opp}" if self.opp and (self.np or 2) == 2 else ""),
                                         output=OUT_EXPLAIN if self.explain else OUT_LIVE)
 
     # ---- 多人桌对手 ----
@@ -1035,6 +1039,7 @@ class HandSession:
             self.cur = {"hero": list(st["hero"]), "board": [], "pos": hist.pos, "start_total": self._total(st), "ev": hist.ev, "start": {},
                         "np": getattr(hist, "np", 2) or 2, "seats": dict(getattr(hist, "seats", {}) or {})}
             if self.cur["np"] > 2: self._load_seats(self.cur["seats"])
+            if self.cur["np"] != self.np: self.np = self.cur["np"]; self._static()
             self._restat()
             self.dynamic = self._dyn()           # 画像/近况/统计只在手开始时刷新，手内 system 保持不变
         self.cur["board"] = list(st["board"])
